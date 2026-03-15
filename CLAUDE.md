@@ -178,6 +178,7 @@ git merge upstream/develop
 - MCP tool prefix: `muninn_` (unchanged from upstream for compatibility)
 - Default data directory: `~/.muninn/data`
 - Distribution: GitHub Releases (compiled binaries) or `git clone` + `go build`
+- Versioning: follows upstream tags with `-lite` suffix (e.g. upstream `v0.4.1-alpha` → `v0.4.1-alpha-lite`). Release workflow triggers on `v*-lite` tags only.
 
 ## License
 
