@@ -1,503 +1,295 @@
-# MuninnDB
+# MuninnDB Lite
 
-**Memory that strengthens with use, fades when unused, and pushes to you when it matters** — accessible over MCP, REST, gRPC, or SDK.
+**Cognitive memory for AI agents** — single binary, MCP-only, zero configuration.
 
-*Provisional patent filed Feb 26, 2026 on the core cognitive primitives (engine-native Ebbinghaus decay, Hebbian learning, Bayesian confidence, semantic triggers). This helps protect the project so we can keep it open and innovative for everyone.*
+Lightweight fork of [MuninnDB](https://github.com/scrypster/muninndb). Same cognitive engine. Stripped down to MCP stdio for embedding into any AI project.
 
-[![CI](https://github.com/scrypster/muninndb/actions/workflows/ci.yml/badge.svg)](https://github.com/scrypster/muninndb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-BSL%201.1-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.25%2B-00ADD8)](https://go.dev)
-[![Status](https://img.shields.io/badge/status-alpha-orange)](https://github.com/scrypster/muninndb/releases)
 
-> **Prerequisites:** None. Single binary, zero dependencies, zero configuration required.
-> To uninstall: `rm $(which muninn)` and delete `~/.muninn`.
-
----
-
-## Try It — 30 Seconds
-
-**macOS / Linux:**
-
-```bash
-# 1. Install
-curl -sSL https://muninndb.com/install.sh | sh
-
-# 2. Start (first-run setup is automatic)
-muninn start
-```
-
-**Windows (PowerShell):**
-
-```powershell
-# 1. Install
-irm https://muninndb.com/install.ps1 | iex
-
-# 2. Start (first-run setup is automatic)
-muninn start
-```
-
-```bash
-# 3. Store a memory
-curl -sX POST http://127.0.0.1:8475/api/engrams \
-  -H 'Content-Type: application/json' \
-  -d '{"concept":"payment incident","content":"We switched to idempotency keys after the double-charge incident in Q3"}'
-
-# 4. Ask what is relevant RIGHT NOW
-curl -sX POST http://127.0.0.1:8475/api/activate \
-  -H 'Content-Type: application/json' \
-  -d '{"context":["debugging the payment retry logic"]}'
-```
-
-That Q3 incident surfaces. You never mentioned it. MuninnDB connected the concepts.
-
-**Web UI:** `http://127.0.0.1:8476` · **Admin:** `root` / `password` (change after first login)
+> **Prerequisites:** None. Single binary, zero dependencies.
+> To uninstall: `rm $(which muninndb-lite)` and delete `~/.muninn`.
 
 ---
 
-## Connect Your AI Tools
+## Why This Fork Exists
 
-MuninnDB auto-detects and configures Claude Desktop, Cursor, OpenClaw, Windsurf, OpenCode, VS Code, and others:
+[MuninnDB](https://github.com/scrypster/muninndb) is a full-featured cognitive memory database with REST, gRPC, MCP, a web UI, multi-node clustering, built-in ONNX embeddings, and SDKs in four languages. It is designed to run as a standalone server.
 
-```bash
-muninn init
-```
+That's more than most AI agents need.
 
-Follow the prompts. Done. Your AI tools now have persistent, cognitive memory.
+MuninnDB Lite exists for a different use case: **embedding cognitive memory directly into an AI tool's MCP configuration**. One line in your config, one subprocess, no server to manage.
 
-**Manual MCP configuration** — if you prefer to configure by hand:
+### What was removed
 
-<details>
-<summary>Claude Desktop</summary>
+| Removed | Why |
+|---|---|
+| REST API, gRPC, MBP protocols | MCP stdio is the only transport needed for agent integration |
+| Web UI (dashboard, graph visualizer) | The AI agent is the interface |
+| Multi-node clustering (Raft consensus) | Single-node is sufficient for local agent memory |
+| Bundled ONNX embedder | Heavy native dependency; Ollama or API providers cover this |
+| SDKs (Go, Python, Node, PHP) | They target REST/gRPC which are removed; MCP is the access layer |
+| Admin CLI (cluster, upgrade, REPL) | Not needed for embedded usage |
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+### What is identical
 
-```json
-{
-  "mcpServers": {
-    "muninn": {
-      "url": "http://127.0.0.1:8750/mcp"
-    }
-  }
-}
-```
+The cognitive engine, storage layer, and MCP tools are **the same code** as MuninnDB. This is not a reimplementation — it is MuninnDB with fewer entry points. Specifically:
 
-> **Note:** `"type"` is intentionally omitted. Claude Desktop v1.1.4010+ crashes on startup if `"type": "http"` is present in any `mcpServers` entry — the transport is inferred from the URL.
-</details>
+| Kept (identical to MuninnDB) | Documentation |
+|---|---|
+| Cognitive primitives (Ebbinghaus decay, Hebbian learning, Bayesian confidence, predictive activation) | [Cognitive Primitives](https://github.com/scrypster/muninndb/blob/develop/docs/cognitive-primitives.md) |
+| 6-phase activation pipeline (BM25 + vector + decay + Hebbian + graph traversal + ACT-R/CGDN scoring) | [Retrieval Design](https://github.com/scrypster/muninndb/blob/develop/docs/retrieval-design.md) |
+| Pebble KV storage (engrams, entities, associations, cache, archive, WAL) | [Architecture](https://github.com/scrypster/muninndb/blob/develop/docs/architecture.md) |
+| 36 MCP tools | [MuninnDB Docs](https://muninndb.com/docs) |
+| Entity knowledge graph (extraction, relationships, clusters, timeline) | [Entity Graph](https://github.com/scrypster/muninndb/blob/develop/docs/entity-graph.md) |
+| Hierarchical memory (trees, parent-child) | [Hierarchical Memory](https://github.com/scrypster/muninndb/blob/develop/docs/hierarchical-memory.md) |
+| Vault isolation (multi-tenant, per-vault cognitive config) | [Auth & Vaults](https://github.com/scrypster/muninndb/blob/develop/docs/auth.md) |
+| Embedding providers (Ollama, OpenAI, Voyage, Cohere, Google, Jina, Mistral) | [Plugins](https://github.com/scrypster/muninndb/blob/develop/docs/plugins.md) |
+| LLM enrichment (entity extraction, summarization, classification) | [Plugins](https://github.com/scrypster/muninndb/blob/develop/docs/plugins.md) |
+| Contradiction detection, consolidation, deduplication | [Feature Reference](https://github.com/scrypster/muninndb/blob/develop/docs/feature-reference.md) |
+| Soft-delete, restore, provenance tracking | [Feature Reference](https://github.com/scrypster/muninndb/blob/develop/docs/feature-reference.md) |
 
-<details>
-<summary>Claude Code / CLI</summary>
+For deep documentation on any of these features, refer to the [MuninnDB docs](https://github.com/scrypster/muninndb/tree/develop/docs).
 
-Add to `~/.claude.json`:
+### How the fork stays in sync
 
-```json
-{
-  "mcpServers": {
-    "muninn": {
-      "type": "http",
-      "url": "http://127.0.0.1:8750/mcp"
-    }
-  }
-}
-```
-</details>
+MuninnDB Lite is a minimal-diff fork. The `internal/` packages are kept intact — only the entry point (`cmd/`) is modified. This means upstream changes merge cleanly and the fork stays current with MuninnDB's development.
 
-<details>
-<summary>Cursor</summary>
+---
 
-Add to `~/.cursor/mcp.json`:
+## Setup
+
+Add to your MCP client configuration:
 
 ```json
 {
   "mcpServers": {
     "muninn": {
-      "type": "http",
-      "url": "http://127.0.0.1:8750/mcp"
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary>OpenClaw</summary>
-
-Add to `~/.openclaw/openclaw.json`:
-
-```json
-{
-  "mcpServers": {
-    "muninn": {
-      "command": "muninn",
+      "command": "muninndb-lite",
       "args": ["mcp"],
-      "transport": "stdio"
+      "env": {}
     }
   }
 }
 ```
 
-OpenClaw uses stdio transport. The `muninn mcp` proxy (included in the binary) handles bearer token auth automatically — no credential needed in the config file.
-</details>
+That's it. On first call, the database initializes automatically in `~/.muninn/data`.
 
 <details>
-<summary>Windsurf</summary>
+<summary>Where to put this config</summary>
 
-Add to `~/.codeium/windsurf/mcp_config.json`:
+| Client | Config file |
+|---|---|
+| Claude Code | `~/.claude.json` |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) |
+| Cursor | `~/.cursor/mcp.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| VS Code / Copilot | `.vscode/mcp.json` |
+| OpenClaw | `~/.openclaw/openclaw.json` |
+| OpenCode | `~/.config/opencode/opencode.json` |
+
+</details>
+
+---
+
+## How It Works
+
+Your AI agent stores and retrieves memories through 36 MCP tools. Memories are not just stored — they are **cognitively processed**:
+
+```
+Your AI Agent                    MuninnDB Lite
+     |                                |
+     |-- muninn_remember ------------>|  Store memory + index
+     |                                |  (BM25 full-text + optional vectors)
+     |                                |  Initialize cognitive scores
+     |                                |
+     |-- muninn_recall -------------->|  BM25 search + cognitive scoring:
+     |                                |    - Ebbinghaus decay (recent = stronger)
+     |                                |    - Hebbian learning (co-activated = linked)
+     |                                |    - Bayesian confidence (confirmed = trusted)
+     |                                |    - ACT-R temporal weighting
+     |<-- ranked results -------------|
+     |                                |
+     |-- muninn_link ---------------->|  Create associations between memories
+     |-- muninn_contradictions ------>|  Detect conflicting memories
+     |-- muninn_traverse ------------>|  Walk the knowledge graph
+```
+
+Memories that are used together get linked automatically. Memories that aren't accessed fade naturally. Contradictions are detected. The database evolves while the agent works.
+
+For a deep dive into the cognitive mechanics, see [How Memory Works](https://github.com/scrypster/muninndb/blob/develop/docs/how-memory-works.md) in the MuninnDB docs.
+
+---
+
+## MCP Tools
+
+On first connect, call `muninn_guide` — the database returns usage instructions adapted to its current configuration.
+
+All 36 tools are identical to MuninnDB. For detailed parameter documentation, see the [MuninnDB MCP reference](https://muninndb.com/docs).
+
+### Core
+
+| Tool | Description |
+|---|---|
+| `muninn_remember` | Store a memory (concept, content, tags, entities, relationships) |
+| `muninn_remember_batch` | Store up to 50 memories in one call |
+| `muninn_recall` | Retrieve memories by context (cognitive activation) |
+| `muninn_read` | Read a specific memory by ID |
+| `muninn_forget` | Soft-delete a memory |
+| `muninn_evolve` | Update an existing memory |
+| `muninn_link` | Create a typed relationship between two memories |
+| `muninn_guide` | Get usage instructions for the current vault configuration |
+| `muninn_status` | Server and vault status |
+| `muninn_where_left_off` | Resume where the last session ended |
+
+### Cognitive
+
+| Tool | Description |
+|---|---|
+| `muninn_contradictions` | Detect contradictory memories |
+| `muninn_consolidate` | Merge redundant memories |
+| `muninn_explain` | Explain why a memory was returned |
+| `muninn_decide` | Decision support based on stored memories |
+| `muninn_feedback` | Provide feedback on recall quality |
+
+### Knowledge Graph
+
+| Tool | Description |
+|---|---|
+| `muninn_entities` | List known entities |
+| `muninn_entity` | Entity details |
+| `muninn_entity_clusters` | Clusters of related entities |
+| `muninn_entity_state` | Entity state (timeline, relations) |
+| `muninn_entity_timeline` | Entity timeline |
+| `muninn_find_by_entity` | Find memories mentioning an entity |
+| `muninn_merge_entity` | Merge duplicate entities |
+| `muninn_similar_entities` | Find similar entities |
+| `muninn_traverse` | Walk the relationship graph |
+| `muninn_export_graph` | Export the knowledge graph |
+
+### Hierarchy & Maintenance
+
+| Tool | Description |
+|---|---|
+| `muninn_remember_tree` | Store a hierarchy of memories |
+| `muninn_recall_tree` | Retrieve a memory tree |
+| `muninn_add_child` | Add a child to a hierarchical memory |
+| `muninn_session` | Session management (vault pinning) |
+| `muninn_state` | Detailed memory state (scores, metadata) |
+| `muninn_list_deleted` | List soft-deleted memories |
+| `muninn_restore` | Restore a deleted memory |
+| `muninn_replay_enrichment` | Replay enrichment on a memory |
+| `muninn_retry_enrich` | Retry failed enrichment |
+| `muninn_provenance` | Memory operation history |
+
+---
+
+## Inline Enrichment
+
+Your AI agent can provide structured data directly in `muninn_remember`, bypassing any need for server-side LLM enrichment:
+
+```json
+{
+  "content": "Chose PostgreSQL for persistence over MongoDB",
+  "concept": "database choice",
+  "summary": "Evaluated databases; PostgreSQL selected for ACID compliance",
+  "entities": [
+    {"name": "PostgreSQL", "type": "database"},
+    {"name": "MongoDB", "type": "database"}
+  ],
+  "entity_relationships": [
+    {"from_entity": "PostgreSQL", "to_entity": "MongoDB", "rel_type": "chosen_over", "weight": 0.9}
+  ]
+}
+```
+
+When `entities` and `summary` are provided inline, no server-side LLM call is needed. The agent structures the data, MuninnDB Lite stores it with full cognitive processing.
+
+This is the recommended approach for MuninnDB Lite: the AI agent enriches at write time, no API key required on the server.
+
+---
+
+## Optional: Embedding Providers
+
+By default, MuninnDB Lite uses BM25 full-text search combined with cognitive scoring. This works well for most use cases.
+
+For improved semantic recall (especially above ~500 memories), configure an embedding provider via environment variables:
+
+| Provider | Env var | Notes |
+|---|---|---|
+| Ollama | `MUNINN_OLLAMA_URL=ollama://localhost:11434/nomic-embed-text` | Local, free |
+| OpenAI | `MUNINN_OPENAI_KEY=sk-...` | text-embedding-3-small |
+| Voyage AI | `MUNINN_VOYAGE_KEY=pa-...` | Top MTEB benchmarks |
+| Cohere | `MUNINN_COHERE_KEY=...` | embed-v4 |
+| Google | `MUNINN_GOOGLE_KEY=...` | Gemini embeddings |
+| Jina | `MUNINN_JINA_KEY=...` | jina-embeddings-v3 |
+| Mistral | `MUNINN_MISTRAL_KEY=...` | mistral-embed |
 
 ```json
 {
   "mcpServers": {
     "muninn": {
-      "type": "http",
-      "url": "http://127.0.0.1:8750/mcp"
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary>VS Code</summary>
-
-Add to `.vscode/mcp.json` in your workspace:
-
-```json
-{
-  "servers": {
-    "muninn": {
-      "type": "http",
-      "url": "http://127.0.0.1:8750/mcp"
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary>OpenCode</summary>
-
-Add to `~/.config/opencode/opencode.json` (macOS/Linux) or `%APPDATA%\opencode\opencode.json` (Windows):
-
-```json
-{
-  "mcp": {
-    "muninn": {
-      "type": "remote",
-      "url": "http://127.0.0.1:8750/mcp",
-      "oauth": false,
-      "headers": {
-        "Authorization": "Bearer {file:~/.muninn/mcp.token}"
+      "command": "muninndb-lite",
+      "args": ["mcp"],
+      "env": {
+        "MUNINN_OLLAMA_URL": "ollama://localhost:11434/nomic-embed-text"
       }
     }
   }
 }
 ```
 
-Omit the `headers` block if you are running MuninnDB without token authentication.
+When an embedding provider is configured, MuninnDB Lite combines BM25 + vector similarity + cognitive scoring for retrieval. When none is configured, BM25 + cognitive scoring is used automatically.
 
-> **Note:** OpenCode tools are exposed as `muninn_muninn_remember`, `muninn_muninn_recall`, etc. (server key + tool name prefix). Users preferring shorter names can register the server under the key `memory` instead, which yields `memory_muninn_remember`, `memory_muninn_recall`, etc.
-</details>
-
-<details>
-<summary>GitHub Copilot</summary>
-
-Add to `.vscode/mcp.json` in your workspace:
-
-```json
-{
-  "servers": {
-    "muninn": {
-      "type": "http",
-      "url": "http://127.0.0.1:8750/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_ADMIN_TOKEN"
-      }
-    }
-  }
-}
-```
-
-Replace `YOUR_ADMIN_TOKEN` with the token from your `muninn.env` file. Omit the `headers` block if running without token auth. If Copilot shows an OAuth error, the `headers` block is missing — adding it resolves it. [Full Copilot setup guide →](docs/integrations/github-copilot.md)
-</details>
-
-<details>
-<summary>Codebuff</summary>
-
-Add to your Codebuff MCP config:
-
-```json
-{
-  "mcpServers": {
-    "muninn": {
-      "type": "http",
-      "url": "http://127.0.0.1:8750/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_ADMIN_TOKEN"
-      }
-    }
-  }
-}
-```
-
-For proactive memory behavior — Codebuff storing useful discoveries without being asked — add the memory instructions to your `AGENT.md`. [Full Codebuff setup guide →](docs/integrations/codebuff.md)
-</details>
-
-MuninnDB exposes **35 MCP tools** — store, activate, search, batch insert, get usage guidance, manage vaults, and more. On first connect, call `muninn_guide` for vault-aware instructions. No token required against the default vault. [Full MCP reference →](https://muninndb.com/docs)
+For details on embedding providers, see [Plugins](https://github.com/scrypster/muninndb/blob/develop/docs/plugins.md) in the MuninnDB docs.
 
 ---
 
-## What Just Happened
+## Optional: LLM Enrichment
 
-Most databases store data and wait. MuninnDB stores *memory traces* — called **engrams** — and continuously works on them in the background. When you called `activate`, it ran a 6-phase pipeline: parallel full-text + vector search, fused the results, applied Hebbian co-activation boosts from past queries, injected predictive candidates from sequential patterns, traversed the association graph, and scored everything with ACT-R temporal weighting — in under 20ms.
+Server-side enrichment extracts entities, relationships, and summaries automatically in the background. This is optional — inline enrichment from the agent is the recommended approach.
 
-The Q3 incident surfaced because MuninnDB understood that *"payment retry logic"* and *"idempotency keys after a double-charge"* are part of the same conversation. You never wrote that relationship. It emerged from semantic proximity and how these concepts travel together. That is the difference between a database and memory.
+| Provider | Configuration |
+|---|---|
+| Ollama | `MUNINN_ENRICH_URL=ollama://localhost:11434/llama3` |
+| OpenAI-compatible | `MUNINN_ENRICH_URL=openai://api.openai.com/gpt-4o-mini` + `MUNINN_OPENAI_KEY` |
+| Anthropic | `MUNINN_ENRICH_URL=anthropic://claude-haiku-4-5-20251001` + `MUNINN_ANTHROPIC_KEY` |
 
-[Deep dive: How Memory Works →](docs/how-memory-works.md)
-
----
-
-## Why MuninnDB
-
-- **Temporal priority** — the database continuously recalculates what matters based on how recently and how often you've accessed each memory. Memories you use stay sharp. Memories you ignore fade naturally. The database moves while you sleep.
-- **Hebbian learning** — memories activated together automatically form associations. Edges strengthen with co-activation, fade when the pattern stops. You never define a schema of relationships.
-- **Predictive activation** — the database tracks sequential patterns across activations and learns to surface the *next* memory before you ask for it. Recall@10 improves 21% in workflow-oriented use cases.
-- **Semantic triggers** — subscribe to a context. The database pushes when something becomes relevant — not because you queried, but because *relevance changed*. No polling. No cron. The DB initiates.
-- **Bayesian confidence** — every engram tracks how sure MuninnDB is. Reinforcing memories raise confidence; contradictions lower it. Grounded in evidence, not a label you assign.
-- **Plug-and-play AI onboarding** — call `muninn_guide` and the database tells your AI exactly how to use memory, customized to the vault's configuration. No manual prompt engineering.
-- **Retroactive enrichment** — add the embed or enrich plugin and every existing memory upgrades automatically in the background. No migration. No code change. The database improves what it already holds.
-- **Bulk insert** — batch up to 50 memories in a single call across all protocols (REST, gRPC, MCP). Efficient for data seeding, migration, and high-throughput agents.
-- **Four protocols** — MBP (binary, <10ms ACK), REST (JSON), gRPC (protobuf), MCP (AI agents). Pick your stack; they all hit the same cognitive engine.
-- **Single binary** — no Redis, no Kafka, no Postgres dependency. One process. One install command. Runs on a MacBook or a 3-node cluster.
+For details on enrichment configuration, see [Plugins](https://github.com/scrypster/muninndb/blob/develop/docs/plugins.md) in the MuninnDB docs.
 
 ---
 
-## Examples
+## Configuration Reference
 
-**REST — the full cycle:**
+| Env var | Default | Description |
+|---|---|---|
+| `MUNINNDB_DATA` | `~/.muninn/data` | Data directory |
+| `MUNINN_OLLAMA_URL` | *(none)* | Ollama embedding endpoint |
+| `MUNINN_OPENAI_KEY` | *(none)* | OpenAI API key (embeddings) |
+| `MUNINN_VOYAGE_KEY` | *(none)* | Voyage AI API key |
+| `MUNINN_COHERE_KEY` | *(none)* | Cohere API key |
+| `MUNINN_GOOGLE_KEY` | *(none)* | Google API key (Gemini embeddings) |
+| `MUNINN_JINA_KEY` | *(none)* | Jina API key |
+| `MUNINN_MISTRAL_KEY` | *(none)* | Mistral API key |
+| `MUNINN_ENRICH_URL` | *(none)* | LLM enrichment provider URL |
+| `MUNINN_ANTHROPIC_KEY` | *(none)* | Anthropic API key (enrichment) |
 
-```bash
-# Write
-curl -sX POST http://127.0.0.1:8475/api/engrams \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "concept": "auth architecture",
-    "content": "Short-lived JWTs (15min), refresh tokens in HttpOnly cookies, sessions server-side in Redis",
-    "tags": ["auth", "security"]
-  }'
-
-# Activate by context (returns ranked, time-weighted, associated memories)
-curl -sX POST http://127.0.0.1:8475/api/activate \
-  -H 'Content-Type: application/json' \
-  -d '{"context": ["reviewing the login flow for the mobile app"], "max_results": 5}'
-
-# Search by text
-curl 'http://127.0.0.1:8475/api/engrams?q=JWT&vault=default'
-```
-
-**Python SDK:**
-
-```python
-from muninn import MuninnClient
-
-async with MuninnClient("http://127.0.0.1:8475") as m:
-    # Store
-    await m.write(vault="default", concept="auth architecture",
-                  content="Short-lived JWTs, refresh in HttpOnly cookies")
-
-    # Activate — context-aware, ranked, cognitively weighted
-    result = await m.activate(vault="default",
-                              context=["reviewing the login flow"],
-                              max_results=5)
-    for item in result.activations:
-        print(f"{item.concept}  score={item.score:.3f}")
-```
-
-```bash
-pip install muninn-python
-```
-
-**LangChain integration:**
-
-```python
-from muninn.langchain import MuninnDBMemory
-from langchain.chains import ConversationChain
-
-memory = MuninnDBMemory(vault="my-agent")
-chain = ConversationChain(llm=your_llm, memory=memory)
-# Every turn is stored. Every response draws on relevant past context.
-```
-
-**Go SDK:**
-
-```go
-import "github.com/scrypster/muninndb/sdk/go/muninn"
-
-client := muninn.NewClient("http://127.0.0.1:8475", "your-api-key")
-id, _ := client.Write(ctx, "default", "auth architecture",
-    "Short-lived JWTs, refresh in HttpOnly cookies", []string{"auth"})
-resp, _ := client.Activate(ctx, "default", []string{"login flow"}, 5)
-```
-
-```bash
-go get github.com/scrypster/muninndb/sdk/go/muninn
-```
-
-**Node.js / TypeScript SDK:**
-
-```typescript
-import { MuninnClient } from '@muninndb/client';
-
-const client = new MuninnClient({ token: 'your-api-key' });
-const { id } = await client.write({ concept: 'auth architecture',
-    content: 'Short-lived JWTs, refresh in HttpOnly cookies' });
-const result = await client.activate({ context: ['login flow'] });
-```
-
-```bash
-npm install @muninndb/client
-```
-
-**PHP SDK:**
-
-```php
-use MuninnDB\MuninnClient;
-
-$client = new MuninnClient(token: 'your-api-key');
-$result = $client->write(concept: 'auth architecture',
-    content: 'Short-lived JWTs, refresh in HttpOnly cookies');
-$memories = $client->activate(context: ['login flow']);
-```
-
-```bash
-composer require muninndb/client
-```
-
-[More examples →](sdk/python/examples/) · [Full API reference →](https://muninndb.com/docs)
+For the full configuration reference including vault-level cognitive tuning (plasticity presets, decay rates, Hebbian weights, ACT-R parameters), see [Feature Reference](https://github.com/scrypster/muninndb/blob/develop/docs/feature-reference.md) in the MuninnDB docs.
 
 ---
 
 ## License
 
-MuninnDB uses the **Business Source License 1.1** (BSL 1.1).
+MuninnDB Lite inherits the **Business Source License 1.1** (BSL 1.1) from MuninnDB.
 
 - Free for individuals, hobbyists, researchers, and open-source projects.
 - Free for small organizations (<50 employees **and** <$5M revenue).
 - Free for all internal use.
-- **Commercial hosted/SaaS/DBaaS/managed services require a license from the author.**
 - Automatically becomes Apache 2.0 on February 26, 2030.
-- Provisional patent filed Feb 26, 2026 on the core cognitive engine.
 
-Full terms: [LICENSE](LICENSE). See also [CLA](CLA.md) for contributors.
-
----
-
-## Configuration
-
-MuninnDB works out of the box with no configuration. The bundled local embedder is included — offline, no API key, no setup.
-
-When you're ready to customize:
-
-| What | How |
-|------|-----|
-| Embedder: bundled (default) | On automatically — set `MUNINN_LOCAL_EMBED=0` to disable |
-| Embedder: Ollama | `MUNINN_OLLAMA_URL=ollama://localhost:11434/nomic-embed-text` |
-| Embedder: OpenAI | `MUNINN_OPENAI_KEY=sk-...` (+ optional `MUNINN_OPENAI_URL=http://localhost:8080/v1`; invalid override disables OpenAI init) |
-| Embedder: Voyage | `MUNINN_VOYAGE_KEY=pa-...` |
-| Embedder: Cohere | `MUNINN_COHERE_KEY=...` |
-| Embedder: Google (Gemini) | `MUNINN_GOOGLE_KEY=...` |
-| Embedder: Jina | `MUNINN_JINA_KEY=...` |
-| Embedder: Mistral | `MUNINN_MISTRAL_KEY=...` |
-| LLM enrichment | `MUNINN_ENRICH_URL=anthropic://claude-haiku-4-5-20251001` + `MUNINN_ANTHROPIC_KEY=sk-ant-...` |
-| Data directory | `MUNINNDB_DATA=/path/to/data` (default: `~/.muninn/data`) |
-| Memory limit | `MUNINN_MEM_LIMIT_GB=4` |
-
-**Docker:**
-
-```bash
-docker run -d \
-  --name muninndb \
-  -p 8474:8474 -p 8475:8475 -p 8476:8476 -p 8750:8750 \
-  -v muninndb-data:/data \
-  ghcr.io/scrypster/muninndb:latest
-```
-
-[Full self-hosting guide →](docs/self-hosting.md)
+Full terms: [LICENSE](LICENSE).
 
 ---
 
-## Documentation
-
-For an intent-organized reading guide, see [docs/index.md](docs/index.md).
-
-| | |
-|---|---|
-| [Quickstart](docs/quickstart.md) | Detailed install, Docker, embedder setup, first vault |
-| [How Memory Works](docs/how-memory-works.md) | The neuroscience behind why this works |
-| [Architecture](docs/architecture.md) | ERF format, 6-phase engine, wire protocols, cognitive workers |
-| [Capabilities](docs/capabilities.md) | Technical capability statement with code references for every feature |
-| [Cluster Operations](docs/cluster-operations.md) | Multi-node clustering, replication, and leader election |
-| [Cognitive Primitives](docs/cognitive-primitives.md) | Temporal scoring, Hebbian learning, Bayesian confidence, PAS |
-| [Engram](docs/engram.md) | Core data structure: fields, lifecycle states, and key-space layout |
-| [Entity Graph](docs/entity-graph.md) | Named entity extraction, relationships, and cross-vault entity index |
-| [Semantic Triggers](docs/semantic-triggers.md) | Push-based memory — how and why |
-| [Auth & Vaults](docs/auth.md) | Two-layer model, API keys, full vs. observe mode |
-| [Hierarchical Memory](docs/hierarchical-memory.md) | Tree-structured memory for outlines, plans, and task hierarchies |
-| [Index](docs/index.md) | Intent-organized reading guide |
-| [Plugins](docs/plugins.md) | Embed + enrich — retroactive enrichment without code changes |
-| [Retrieval Design](docs/retrieval-design.md) | The 6-phase ACTIVATE pipeline: how recall queries are processed |
-| [Self-Hosting](docs/self-hosting.md) | Deployment options, environment variables, and data directory setup |
-| [Feature Reference](docs/feature-reference.md) | Complete list of every feature, operation, and config option |
-| [vs. Other Databases](docs/vs-other-databases.md) | Full comparison with vector, graph, relational, document |
-
----
-
-## Contributing
-
-PRs welcome. For large changes, open an issue first.
-
-By submitting a pull request, you agree to the [Contributor License Agreement](CLA.md).
-
-Ports at a glance: `8474` MBP · `8475` REST · `8476` Web UI · `8477` gRPC · `8750` MCP
-
----
-
-## Troubleshooting
-
-<details>
-<summary>MCP connection fails with schema validation error</summary>
-
-MuninnDB speaks both `http` and `sse` MCP transports — the server handles either. The `"type"` field in your config must match what your client expects:
-
-- **Claude Desktop v1.1.4010+**: omit `"type"` entirely — the transport is inferred from the URL. Adding `"type": "http"` crashes Claude Desktop on startup.
-- **Most other tools** (Cursor, Windsurf, VS Code, etc.): `"type": "http"` is correct.
-- **Older clients** (Claude Code before v2.1.53): use `"type": "sse"`.
-
-If your tool reports a schema validation or config parsing error, try removing `"type"` or switching between `"http"` and `"sse"`.
-</details>
-
-<details>
-<summary>muninn_remember or muninn_recall hangs</summary>
-
-Check that the server is running: `muninn status`. If the server is running but tools hang, check `muninn logs` for errors. The most common cause is a stale MCP config pointing to the wrong port — verify the URL in your config matches `http://127.0.0.1:8750/mcp`.
-</details>
-
-<details>
-<summary>muninn: command not found</summary>
-
-The binary must be in your `PATH`. On macOS/Linux, the default install location is `~/.local/bin/muninn` — run `echo $PATH` to verify it includes `~/.local/bin`. If not, add `export PATH="$HOME/.local/bin:$PATH"` to your `~/.zshrc` or `~/.bashrc` and restart your shell. On Windows, the default is `%LOCALAPPDATA%\muninn` — run `$env:PATH` in PowerShell to verify.
-</details>
-
-<details>
-<summary>Windows: DLL or ORT initialization error on first start</summary>
-
-The bundled local embedder uses ONNX Runtime, which requires the Visual C++ Redistributable on Windows. Most machines already have it. If you see an error about `onnxruntime.dll` or "ORT environment init", install the [Visual C++ 2019+ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) and restart muninn.
-</details>
-
----
-
-*Named after Muninn — one of Odin's two ravens, whose name means "memory" in Old Norse. Muninn flies across the nine worlds and returns what has been forgotten.*
-
-Built by [MJ Bonanno](https://scrypster.com) · [muninndb.com](https://muninndb.com) · BSL 1.1
-
----
-
-*MuninnDB is patent pending (U.S. Provisional Patent Application No. 63/991,402) and licensed under BSL 1.1.*
+*Lightweight fork of [MuninnDB](https://github.com/scrypster/muninndb) by [MJ Bonanno](https://scrypster.com).*
+*Named after Muninn, one of Odin's ravens, whose name means "memory" in Old Norse.*

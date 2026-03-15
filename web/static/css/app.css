@@ -1,8 +1,0 @@
-/* app.css — entry point: import all layers */
-@import './theme.css';
-@import './base.css';
-@import './components.css';
-
-@tailwind base;
-@tailwind components;
-@tailwind utilities;

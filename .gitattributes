@@ -1,0 +1,26 @@
+# muninndb-lite: merge=ours for files/directories removed in the fork.
+# This prevents upstream merges from re-introducing deleted code.
+web/**                  merge=ours
+sdk/**                  merge=ours
+proto/**                merge=ours
+docs/**                 merge=ours
+cmd/bench/**            merge=ours
+cmd/diag/**             merge=ours
+cmd/eval-semantic/**    merge=ours
+Dockerfile              merge=ours
+docker-compose.yml      merge=ours
+.goreleaser.yml         merge=ours
+install.sh              merge=ours
+install.ps1             merge=ours
+CONTRIBUTING.md         merge=ours
+CHANGELOG.md            merge=ours
+CLA.md                  merge=ours
+NOTICE                  merge=ours
+Makefile                merge=ours
+README.md               merge=ours
+contrib/**              merge=ours
+.claude/**              merge=ours
+internal/plugin/embed/local*.go merge=ours
+internal/transport/rest/**      merge=ours
+internal/transport/grpc/**      merge=ours
+internal/ui/**                  merge=ours

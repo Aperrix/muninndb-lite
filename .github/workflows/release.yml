@@ -9,7 +9,6 @@ permissions:
   contents: write
 
 jobs:
-  # ── Build native binaries for each supported platform ───────────────────
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ${{ matrix.runner }}
@@ -17,34 +16,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14         # Apple Silicon (M1/M2)
-            goos: darwin
-            goarch: arm64
-            ort_target: _ort-darwin-arm64
-            cache_key: embed-assets-ort-1.24.2-minilm-v2-darwin-arm64
-            cc: ""
-
-          - runner: macos-14         # Cross-compile Intel from arm64 runner
-            goos: darwin
-            goarch: amd64
-            ort_target: _ort-darwin-amd64
-            # ORT dropped Intel Mac support after v1.23.2; this pin is intentional.
-            cache_key: embed-assets-ort-1.23.2-minilm-v2-darwin-amd64
-            cc: "clang -arch x86_64"
-
-          - runner: ubuntu-latest    # Linux x86-64
+          - runner: ubuntu-latest
             goos: linux
             goarch: amd64
-            ort_target: _ort-linux-amd64
-            cache_key: embed-assets-ort-1.24.2-minilm-v2-linux-amd64
-            cc: ""
-
-          - runner: ubuntu-24.04-arm  # Native linux/arm64 runner
+          - runner: ubuntu-24.04-arm
             goos: linux
             goarch: arm64
-            ort_target: _ort-linux-arm64
-            cache_key: embed-assets-ort-1.24.2-minilm-v2-linux-arm64
-            cc: ""
+          - runner: macos-14
+            goos: darwin
+            goarch: arm64
+          - runner: macos-14
+            goos: darwin
+            goarch: amd64
+          - runner: ubuntu-latest
+            goos: windows
+            goarch: amd64
+            ext: .exe
 
     steps:
       - uses: actions/checkout@v4
@@ -54,202 +41,37 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # Cache the model + ORT native library (~56MB per platform).
-      # Key includes ORT version, model name, and platform so stale assets
-      # never get reused after a version bump.
-      - name: Cache embed assets
-        id: asset-cache
-        uses: actions/cache@v4
-        with:
-          path: internal/plugin/embed/assets
-          key: ${{ matrix.cache_key }}
-
-      - name: Fetch embed assets
-        if: steps.asset-cache.outputs.cache-hit != 'true'
-        run: make fetch-model ${{ matrix.ort_target }}
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Build web assets
-        run: cd web && npm ci --ignore-scripts && npm run build
-
-      - name: Build binary
+      - name: Build
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "1"
-          CC: ${{ matrix.cc }}
-        run: |
-          go build \
-            -ldflags "-X main.version=${GITHUB_REF_NAME}" \
-            -o muninn-${{ matrix.goos }}-${{ matrix.goarch }} \
-            ./cmd/muninn/...
+          CGO_ENABLED: "0"
+        run: go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o muninndb-lite-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} ./cmd/muninn/
 
-      - name: Package archive
-        run: |
-          cp muninn-${{ matrix.goos }}-${{ matrix.goarch }} muninn
-          tar czf muninn_${GITHUB_REF_NAME}_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz muninn
-          rm muninn
+      - name: Checksum
+        run: sha256sum muninndb-lite-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} > muninndb-lite-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: muninn-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: muninndb-lite-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
-            muninn-${{ matrix.goos }}-${{ matrix.goarch }}
-            muninn_*_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz
+            muninndb-lite-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+            muninndb-lite-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
 
-  # ── Build Windows binary (separate job — different asset-fetch steps) ──
-  build-windows:
-    name: Build windows/amd64
-    runs-on: windows-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Cache embed assets (Windows)
-        id: asset-cache-win
-        uses: actions/cache@v4
-        with:
-          path: internal/plugin/embed/assets
-          key: embed-assets-ort-1.24.2-minilm-v2-windows-amd64
-
-      - name: Fetch model assets
-        if: steps.asset-cache-win.outputs.cache-hit != 'true'
-        run: |
-          New-Item -ItemType Directory -Path internal/plugin/embed/assets -Force | Out-Null
-          Invoke-WebRequest -Uri "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/onnx/model_int8.onnx" -OutFile "internal/plugin/embed/assets/model_int8.onnx"
-          Invoke-WebRequest -Uri "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json" -OutFile "internal/plugin/embed/assets/tokenizer.json"
-        shell: pwsh
-
-      - name: Fetch ORT DLL
-        if: steps.asset-cache-win.outputs.cache-hit != 'true'
-        run: |
-          Invoke-WebRequest -Uri "https://github.com/microsoft/onnxruntime/releases/download/v1.24.2/onnxruntime-win-x64-1.24.2.zip" -OutFile "$env:TEMP\ort-win-x64.zip"
-          Expand-Archive -Path "$env:TEMP\ort-win-x64.zip" -DestinationPath "$env:TEMP\ort-extract" -Force
-          $dll = Get-ChildItem -Path "$env:TEMP\ort-extract" -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1
-          Copy-Item $dll.FullName -Destination "internal/plugin/embed/assets/onnxruntime_windows_amd64.dll"
-        shell: pwsh
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Build web assets
-        run: cd web && npm ci --ignore-scripts && npm run build
-
-      - name: Build binary
-        run: |
-          go build -ldflags "-X main.version=$env:GITHUB_REF_NAME" -o muninn-windows-amd64.exe ./cmd/muninn/...
-        shell: pwsh
-
-      - name: Package archive
-        run: |
-          Copy-Item muninn-windows-amd64.exe muninn.exe
-          Compress-Archive -Path muninn.exe -DestinationPath "muninn_$($env:GITHUB_REF_NAME)_windows_amd64.zip"
-          Remove-Item muninn.exe
-        shell: pwsh
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: muninn-windows-amd64
-          path: |
-            muninn-windows-amd64.exe
-            muninn_*_windows_amd64.zip
-
-  # ── Create GitHub Release and attach all binaries ───────────────────────
   release:
-    name: Create GitHub Release
-    needs: [build, build-windows]
+    name: Create Release
+    needs: build
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
 
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Create release if it doesn't already exist (e.g. pre-created manually).
-          # This is intentionally idempotent — if the tag/release was created before
-          # CI finished, we skip creation and go straight to uploading assets.
-          if ! gh release view "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" > /dev/null 2>&1; then
-            gh release create "${GITHUB_REF_NAME}" \
-              --repo "${{ github.repository }}" \
-              --title "muninn ${GITHUB_REF_NAME}" \
-              --generate-notes
-          fi
-
-          gh release upload "${GITHUB_REF_NAME}" \
-            --repo "${{ github.repository }}" \
-            --clobber \
-            muninn-darwin-arm64 \
-            muninn-darwin-amd64 \
-            muninn-linux-amd64 \
-            muninn-linux-arm64 \
-            muninn-windows-amd64.exe \
-            muninn_${GITHUB_REF_NAME}_darwin_arm64.tar.gz \
-            muninn_${GITHUB_REF_NAME}_darwin_amd64.tar.gz \
-            muninn_${GITHUB_REF_NAME}_linux_amd64.tar.gz \
-            muninn_${GITHUB_REF_NAME}_linux_arm64.tar.gz \
-            muninn_${GITHUB_REF_NAME}_windows_amd64.zip
-
-  # ── Update Homebrew formula with new version + SHA256s ──────────────────
-  update-formula:
-    name: Update Homebrew Formula
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout homebrew-tap
-        uses: actions/checkout@v4
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          repository: scrypster/homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
-          path: homebrew-tap
-
-      - name: Download release binaries and compute SHA256s
-        run: |
-          VERSION="${GITHUB_REF_NAME}"
-          BASE="https://github.com/scrypster/muninndb/releases/download/${VERSION}"
-          for platform in darwin-arm64 darwin-amd64 linux-amd64 linux-arm64; do
-            curl -fsSL "${BASE}/muninn-${platform}" -o "muninn-${platform}"
-            sha256sum "muninn-${platform}" | cut -d' ' -f1 > "sha256-${platform}.txt"
-            echo "${platform}: $(cat sha256-${platform}.txt)"
-          done
-
-      - name: Patch formula
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"   # strip leading 'v'
-          ARM64_SHA=$(cat sha256-darwin-arm64.txt)
-          AMD64_MAC_SHA=$(cat sha256-darwin-amd64.txt)
-          AMD64_LIN_SHA=$(cat sha256-linux-amd64.txt)
-          ARM64_LIN_SHA=$(cat sha256-linux-arm64.txt)
-
-          FORMULA="homebrew-tap/Formula/muninn.rb"
-
-          # version line
-          sed -i 's|version "[^"]*"|version "'"${VERSION}"'"|' "${FORMULA}"
-
-          # per-platform sha256 lines (anchored by trailing comment)
-          sed -i 's|sha256 "[^"]*"  # darwin-arm64|sha256 "'"${ARM64_SHA}"'"  # darwin-arm64|' "${FORMULA}"
-          sed -i 's|sha256 "[^"]*"  # darwin-amd64|sha256 "'"${AMD64_MAC_SHA}"'"  # darwin-amd64|' "${FORMULA}"
-          sed -i 's|sha256 "[^"]*"  # linux-amd64|sha256 "'"${AMD64_LIN_SHA}"'"  # linux-amd64|'  "${FORMULA}"
-          sed -i 's|sha256 "[^"]*"  # linux-arm64|sha256 "'"${ARM64_LIN_SHA}"'"  # linux-arm64|'  "${FORMULA}"
-
-      - name: Commit and push
-        run: |
-          cd homebrew-tap
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/muninn.rb
-          git diff --cached --quiet || git commit -m "chore: update muninn to ${GITHUB_REF_NAME}"
-          git push
+          generate_release_notes: true
+          files: |
+            muninndb-lite-*
