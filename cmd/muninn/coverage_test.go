@@ -19,23 +19,15 @@ func TestPrintHelp(t *testing.T) {
 		printHelp()
 	})
 	checks := []string{
-		"muninn",
-		"QUICK START",
+		"muninndb-lite",
+		"USAGE",
 		"COMMANDS",
-		"SERVER FLAGS",
-		"AI TOOL INTEGRATION",
-		"PORTS",
+		"FLAGS",
 		"EMBEDDERS",
 		"LLM ENRICHMENT",
-		"muninn init",
-		"muninn start",
-		"muninn stop",
-		"muninn status",
-		"muninn help",
-		"8474",
-		"8475",
-		"8476",
-		"8750",
+		"muninndb-lite mcp",
+		"muninndb-lite version",
+		"muninndb-lite help",
 	}
 	for _, c := range checks {
 		if !strings.Contains(out, c) {
