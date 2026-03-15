@@ -121,10 +121,16 @@ jobs:
         with:
           merge-multiple: true
 
+      - name: Compute release title
+        id: title
+        env:
+          TAG: ${{ github.ref_name }}
+        run: echo "name=muninndb-lite ${TAG%-lite}" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "muninndb-lite ${{ github.ref_name }}"
+          name: ${{ steps.title.outputs.name }}
           generate_release_notes: true
           files: |
             muninndb-lite-*
