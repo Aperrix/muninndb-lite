@@ -12,6 +12,8 @@ docker-compose.yml      merge=ours
 .goreleaser.yml         merge=ours
 install.sh              merge=ours
 install.ps1             merge=ours
+# Note: install.sh exists in our fork but is completely different from upstream's.
+# merge=ours ensures upstream's version never overwrites ours.
 CONTRIBUTING.md         merge=ours
 CHANGELOG.md            merge=ours
 CLA.md                  merge=ours

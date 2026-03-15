@@ -16,51 +16,25 @@ Lightweight fork of [MuninnDB](https://github.com/scrypster/muninndb). Same cogn
 
 ## Install
 
-### 1. Download the binary
+**macOS / Linux:**
 
 ```bash
-# Linux (amd64)
-curl -fsSL https://github.com/Aperrix/muninndb-lite/releases/latest/download/muninndb-lite-linux-amd64 -o ~/.local/bin/muninndb-lite && chmod +x ~/.local/bin/muninndb-lite
-
-# macOS (Apple Silicon)
-curl -fsSL https://github.com/Aperrix/muninndb-lite/releases/latest/download/muninndb-lite-darwin-arm64 -o ~/.local/bin/muninndb-lite && chmod +x ~/.local/bin/muninndb-lite
+curl -fsSL https://raw.githubusercontent.com/Aperrix/muninndb-lite/develop/install.sh | sh
 ```
 
-<details>
-<summary>Other platforms</summary>
-
-| Platform | Binary |
-|---|---|
-| Linux amd64 | `muninndb-lite-linux-amd64` |
-| Linux arm64 | `muninndb-lite-linux-arm64` |
-| macOS Apple Silicon | `muninndb-lite-darwin-arm64` |
-| macOS Intel | `muninndb-lite-darwin-amd64` |
-| Windows | `muninndb-lite-windows-amd64.exe` |
-
-All binaries available at [GitHub Releases](https://github.com/Aperrix/muninndb-lite/releases/latest).
-
-</details>
-
-<details>
-<summary>Build from source</summary>
+Then add to your AI tool:
 
 ```bash
-git clone https://github.com/Aperrix/muninndb-lite.git
-cd muninndb-lite
-go build -o muninndb-lite ./cmd/muninn/
-# move to a directory in your PATH
-```
-
-</details>
-
-### 2. Add to your AI tool
-
-**Claude Code** (one command):
-```bash
+# Claude Code
 claude mcp add --transport stdio muninn -- muninndb-lite mcp
 ```
 
-**Other MCP clients** — add to your config file:
+That's it. On first call, the database initializes automatically in `~/.muninn/data`.
+
+<details>
+<summary>Other MCP clients</summary>
+
+Add to your config file:
 
 ```json
 {
@@ -74,12 +48,8 @@ claude mcp add --transport stdio muninn -- muninndb-lite mcp
 }
 ```
 
-<details>
-<summary>Config file locations</summary>
-
 | Client | Config file |
 |---|---|
-| Claude Code | `claude mcp add` (see above) or `~/.claude.json` |
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) |
 | Cursor | `~/.cursor/mcp.json` |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` |
@@ -89,7 +59,31 @@ claude mcp add --transport stdio muninn -- muninndb-lite mcp
 
 </details>
 
-That's it. On first call, the database initializes automatically in `~/.muninn/data`.
+<details>
+<summary>Manual download</summary>
+
+Binaries available at [GitHub Releases](https://github.com/Aperrix/muninndb-lite/releases/latest):
+
+| Platform | Binary |
+|---|---|
+| Linux amd64 | `muninndb-lite-linux-amd64` |
+| Linux arm64 | `muninndb-lite-linux-arm64` |
+| macOS Apple Silicon | `muninndb-lite-darwin-arm64` |
+| macOS Intel | `muninndb-lite-darwin-amd64` |
+| Windows | `muninndb-lite-windows-amd64.exe` |
+
+</details>
+
+<details>
+<summary>Build from source</summary>
+
+```bash
+git clone https://github.com/Aperrix/muninndb-lite.git
+cd muninndb-lite
+go build -o muninndb-lite ./cmd/muninn/
+```
+
+</details>
 
 ---
 
