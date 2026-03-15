@@ -9,8 +9,24 @@ permissions:
   contents: write
 
 jobs:
+  # Run tests before building release binaries
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test -timeout 300s ./cmd/muninn/... ./internal/...
+
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: test
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -47,6 +63,12 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o muninndb-lite-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} ./cmd/muninn/
+
+      - name: Smoke test
+        if: matrix.goos == runner.os || (matrix.goos == 'linux' && runner.os == 'Linux') || (matrix.goos == 'darwin' && runner.os == 'macOS')
+        run: |
+          ./muninndb-lite-${{ matrix.goos }}-${{ matrix.goarch }} version
+          ./muninndb-lite-${{ matrix.goos }}-${{ matrix.goarch }} help
 
       - name: Checksum
         run: |

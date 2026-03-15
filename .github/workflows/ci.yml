@@ -8,8 +8,12 @@ on:
 
 jobs:
   build-and-test:
-    name: Build & Test
-    runs-on: ubuntu-latest
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -20,7 +24,7 @@ jobs:
           cache: true
 
       - name: Build
-        run: go build -o muninndb-lite ./cmd/muninn/
+        run: go build -o muninndb-lite${{ matrix.os == 'windows-latest' && '.exe' || '' }} ./cmd/muninn/
 
       - name: Vet
         run: go vet ./cmd/muninn/... ./internal/...
@@ -30,5 +34,12 @@ jobs:
 
       - name: Verify binary
         run: |
-          ./muninndb-lite version
-          ./muninndb-lite help
+          ./muninndb-lite${{ matrix.os == 'windows-latest' && '.exe' || '' }} version
+          ./muninndb-lite${{ matrix.os == 'windows-latest' && '.exe' || '' }} help
+
+      - name: MCP smoke test
+        if: matrix.os != 'windows-latest'
+        run: |
+          RESPONSE=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1.0"}}}' | timeout 15 ./muninndb-lite mcp --data /tmp/muninndb-lite-ci-test 2>/dev/null)
+          echo "$RESPONSE"
+          echo "$RESPONSE" | grep -q '"serverInfo"' || { echo "MCP smoke test failed: no serverInfo in response"; exit 1; }
