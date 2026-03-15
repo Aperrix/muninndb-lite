@@ -4,11 +4,90 @@
 
 Lightweight fork of [MuninnDB](https://github.com/scrypster/muninndb). Same cognitive engine. Stripped down to MCP stdio for embedding into any AI project.
 
+[![CI](https://github.com/Aperrix/muninndb-lite/actions/workflows/ci.yml/badge.svg)](https://github.com/Aperrix/muninndb-lite/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Aperrix/muninndb-lite)](https://github.com/Aperrix/muninndb-lite/releases/latest)
 [![License](https://img.shields.io/badge/license-BSL%201.1-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.25%2B-00ADD8)](https://go.dev)
 
 > **Prerequisites:** None. Single binary, zero dependencies.
 > To uninstall: `rm $(which muninndb-lite)` and delete `~/.muninn`.
+
+---
+
+## Install
+
+Download the latest binary from [GitHub Releases](https://github.com/Aperrix/muninndb-lite/releases/latest):
+
+```bash
+# Linux (amd64)
+curl -fsSL https://github.com/Aperrix/muninndb-lite/releases/latest/download/muninndb-lite-linux-amd64 -o muninndb-lite
+chmod +x muninndb-lite
+sudo mv muninndb-lite /usr/local/bin/
+
+# macOS (Apple Silicon)
+curl -fsSL https://github.com/Aperrix/muninndb-lite/releases/latest/download/muninndb-lite-darwin-arm64 -o muninndb-lite
+chmod +x muninndb-lite
+sudo mv muninndb-lite /usr/local/bin/
+```
+
+<details>
+<summary>Other platforms</summary>
+
+| Platform | Binary |
+|---|---|
+| Linux amd64 | `muninndb-lite-linux-amd64` |
+| Linux arm64 | `muninndb-lite-linux-arm64` |
+| macOS Apple Silicon | `muninndb-lite-darwin-arm64` |
+| macOS Intel | `muninndb-lite-darwin-amd64` |
+| Windows | `muninndb-lite-windows-amd64.exe` |
+
+</details>
+
+<details>
+<summary>Build from source</summary>
+
+```bash
+git clone https://github.com/Aperrix/muninndb-lite.git
+cd muninndb-lite
+go build -o muninndb-lite ./cmd/muninn/
+```
+
+</details>
+
+---
+
+## Setup
+
+Add to your MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "muninn": {
+      "command": "muninndb-lite",
+      "args": ["mcp"],
+      "env": {}
+    }
+  }
+}
+```
+
+That's it. On first call, the database initializes automatically in `~/.muninn/data`.
+
+<details>
+<summary>Where to put this config</summary>
+
+| Client | Config file |
+|---|---|
+| Claude Code | `~/.claude.json` |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) |
+| Cursor | `~/.cursor/mcp.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| VS Code / Copilot | `.vscode/mcp.json` |
+| OpenClaw | `~/.openclaw/openclaw.json` |
+| OpenCode | `~/.config/opencode/opencode.json` |
+
+</details>
 
 ---
 
@@ -53,42 +132,7 @@ For deep documentation on any of these features, refer to the [MuninnDB docs](ht
 
 ### How the fork stays in sync
 
-MuninnDB Lite is a minimal-diff fork. The `internal/` packages are kept intact — only the entry point (`cmd/`) is modified. This means upstream changes merge cleanly and the fork stays current with MuninnDB's development.
-
----
-
-## Setup
-
-Add to your MCP client configuration:
-
-```json
-{
-  "mcpServers": {
-    "muninn": {
-      "command": "muninndb-lite",
-      "args": ["mcp"],
-      "env": {}
-    }
-  }
-}
-```
-
-That's it. On first call, the database initializes automatically in `~/.muninn/data`.
-
-<details>
-<summary>Where to put this config</summary>
-
-| Client | Config file |
-|---|---|
-| Claude Code | `~/.claude.json` |
-| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) |
-| Cursor | `~/.cursor/mcp.json` |
-| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
-| VS Code / Copilot | `.vscode/mcp.json` |
-| OpenClaw | `~/.openclaw/openclaw.json` |
-| OpenCode | `~/.config/opencode/opencode.json` |
-
-</details>
+MuninnDB Lite is a minimal-diff fork. The `internal/` packages are kept intact — only the entry point (`cmd/`) is modified and isolated packages with no wired imports are removed. Upstream changes merge cleanly. Versioning follows upstream with a `-lite` suffix (e.g. `v0.4.1-alpha-lite`).
 
 ---
 
