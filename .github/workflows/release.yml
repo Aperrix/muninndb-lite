@@ -49,7 +49,13 @@ jobs:
         run: go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o muninndb-lite-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} ./cmd/muninn/
 
       - name: Checksum
-        run: sha256sum muninndb-lite-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} > muninndb-lite-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+        run: |
+          FILE="muninndb-lite-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
+          if command -v sha256sum &>/dev/null; then
+            sha256sum "$FILE" > "muninndb-lite-${{ matrix.goos }}-${{ matrix.goarch }}.sha256"
+          else
+            shasum -a 256 "$FILE" > "muninndb-lite-${{ matrix.goos }}-${{ matrix.goarch }}.sha256"
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
