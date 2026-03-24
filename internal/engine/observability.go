@@ -114,7 +114,7 @@ func (e *Engine) Observability(ctx context.Context, version string, uptimeSecond
 
 	// 2. Storage stats
 	diskBytes := e.store.DiskSize()
-	pm := e.store.GetDB().Metrics()
+	pm := e.store.PebbleMetrics()
 
 	var numSSTables int64
 	for i := range pm.Levels {

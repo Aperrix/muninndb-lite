@@ -928,7 +928,7 @@ func TestWriteEngramBatch_EmptyInput(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// CacheLen / GetDB / DiskSize trivial accessors
+// CacheLen / DiskSize trivial accessors
 // ---------------------------------------------------------------------------
 
 // TestStoreCacheLen writes 3 engrams to the L1 cache (via GetEngram which
@@ -955,14 +955,6 @@ func TestStoreCacheLen(t *testing.T) {
 
 	if store.CacheLen() <= 0 {
 		t.Errorf("expected CacheLen > 0 after 3 reads, got %d", store.CacheLen())
-	}
-}
-
-// TestGetDB verifies that GetDB returns the non-nil Pebble instance.
-func TestGetDB(t *testing.T) {
-	store := newTestStore(t)
-	if store.GetDB() == nil {
-		t.Error("expected GetDB() to return non-nil *pebble.DB")
 	}
 }
 
@@ -1007,13 +999,13 @@ func TestContextWithSnapshot(t *testing.T) {
 		t.Error("expected pebbleReader to return non-nil reader when snapshot is in ctx")
 	}
 	// Verify it really used the snapshot (not the live DB) by checking type.
-	if reader == store.GetDB() {
+	if reader == store.db {
 		t.Error("expected pebbleReader to return the snapshot, not the live DB")
 	}
 
 	// Without snapshot in ctx, pebbleReader should fall back to the live DB.
 	liveReader := store.pebbleReader(ctx)
-	if liveReader != store.GetDB() {
+	if liveReader != store.db {
 		t.Error("expected pebbleReader to return the live DB when no snapshot in ctx")
 	}
 }

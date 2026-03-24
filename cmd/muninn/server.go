@@ -132,6 +132,43 @@ type embedInfo struct {
 	HardwareAccelerated  *bool
 }
 
+// injectOpenAIBaseURL injects openAIOverride (the value of MUNINN_OPENAI_URL) as
+// a base_url query param into an openai:// enrich URL, mirroring how the embed
+// provider handles the same env var. No-ops when:
+//   - enrichURL is not an openai:// URL
+//   - enrichURL already has an explicit base_url param
+//   - openAIOverride is empty or resolves to the default api.openai.com
+func injectOpenAIBaseURL(enrichURL, openAIOverride string) string {
+	if !strings.HasPrefix(strings.ToLower(enrichURL), "openai://") {
+		return enrichURL
+	}
+	parsed, err := neturl.Parse(enrichURL)
+	if err != nil || parsed.Query().Get("base_url") != "" {
+		return enrichURL
+	}
+	if openAIOverride == "" {
+		return enrichURL
+	}
+	// If MUNINN_OPENAI_URL is itself an openai:// URL, extract its base_url param.
+	// If it's a plain http(s) URL, use it directly as the base URL.
+	baseURL := openAIOverride
+	if strings.HasPrefix(strings.ToLower(openAIOverride), "openai://") {
+		p, err := neturl.Parse(openAIOverride)
+		if err != nil {
+			return enrichURL
+		}
+		b := p.Query().Get("base_url")
+		if b == "" {
+			return enrichURL // openai:// with no base_url = default api.openai.com, nothing to inject
+		}
+		baseURL = b
+	}
+	q := parsed.Query()
+	q.Set("base_url", baseURL)
+	parsed.RawQuery = q.Encode()
+	return parsed.String()
+}
+
 // resolveOpenAIEmbedProviderURL resolves an OpenAI embed URL override into a
 // provider URL that ParseProviderURL can handle.
 func resolveOpenAIEmbedProviderURL(raw string) (string, error) {
@@ -270,8 +307,17 @@ func buildEmbedder(ctx context.Context, cfg plugincfg.PluginConfig, dataDir stri
 		}
 	}
 
-	if cfg.EmbedProvider != "" && cfg.EmbedProvider != "none" && cfg.EmbedProvider != "local" {
+	// 2. Saved config fallback
+	if cfg.EmbedProvider != "" && cfg.EmbedProvider != "none" {
 		switch cfg.EmbedProvider {
+		case "local":
+			if os.Getenv(localEmbed) != "0" && embedpkg.LocalAvailable() {
+				slog.Info("initializing bundled local ONNX embedder from saved config", "data_dir", dataDir)
+				if svc := tryEmbedService("local://all-MiniLM-L6-v2", plugin.PluginConfig{DataDir: dataDir}); svc != nil {
+					return embedpkg.NewEmbedServiceAdapter(svc), svc, nil
+				}
+				slog.Warn("bundled local embedder init failed (saved config), falling back")
+			}
 		case "ollama":
 			if cfg.EmbedURL != "" {
 				slog.Info("initializing Ollama embedder from saved config", "url", cfg.EmbedURL)
@@ -335,7 +381,19 @@ func buildEmbedder(ctx context.Context, cfg plugincfg.PluginConfig, dataDir stri
 	return activation.NewNoopEmbedder(), nil, nil
 }
 
-// buildEnricher constructs an EnrichService. Priority:
+// buildEnricher constructs an EnrichService from environment variables.
+// Reads MUNINN_ENRICH_URL to select provider and model. Supported schemes:
+//
+//	ollama://localhost:11434/llama3.2          (local, no key required)
+//	openai://gpt-4o-mini                       (MUNINN_ENRICH_API_KEY required)
+//	anthropic://claude-haiku-4-5-20251001      (MUNINN_ANTHROPIC_KEY or MUNINN_ENRICH_API_KEY)
+//	google://gemini-1.5-flash                  (MUNINN_GOOGLE_KEY or MUNINN_ENRICH_API_KEY)
+//
+// Returns nil without error if MUNINN_ENRICH_URL is not set — LLM enrichment
+// is optional. Logs a warning on init failure so the server starts without
+// enrichment rather than refusing to start.
+//
+// Priority:
 //  1. MUNINN_ENRICH_URL env var
 //  2. Saved plugin_config.json
 func buildEnricher(ctx context.Context, cfg plugincfg.PluginConfig) plugin.EnrichPlugin {
@@ -350,6 +408,7 @@ func buildEnricher(ctx context.Context, cfg plugincfg.PluginConfig) plugin.Enric
 		return nil
 	}
 
+	enrichURL = injectOpenAIBaseURL(enrichURL, strings.TrimSpace(os.Getenv("MUNINN_OPENAI_URL")))
 	slog.Info("initializing enrich plugin", "url", enrichURL)
 	svc, err := enrichpkg.NewEnrichService(enrichURL)
 	if err != nil {
@@ -362,7 +421,10 @@ func buildEnricher(ctx context.Context, cfg plugincfg.PluginConfig) plugin.Enric
 		apiKey = os.Getenv("MUNINN_ANTHROPIC_KEY")
 	}
 	if apiKey == "" {
-		apiKey = cfg.EnrichAPIKey
+		apiKey = os.Getenv("MUNINN_GOOGLE_KEY")
+	}
+	if apiKey == "" {
+		apiKey = cfg.EnrichAPIKey // saved config fallback
 	}
 	if err := svc.Init(ctx, plugin.PluginConfig{APIKey: apiKey}); err != nil {
 		slog.Warn("enrich plugin init failed (LLM provider may be down), LLM enrichment disabled", "err", err)
@@ -481,7 +543,7 @@ func runMCPStandalone() {
 	// Flags
 	fs := flag.NewFlagSet("muninndb-lite", flag.ExitOnError)
 	dataDir := fs.String("data", defaultDataDir(), "data directory")
-	mcpToken := fs.String("mcp-token", "", "Bearer token for MCP auth (reads ~/.muninn/mcp.token if empty)")
+	mcpToken := fs.String("mcp-token", "", "Bearer token for MCP auth (reads MUNINN_MCP_TOKEN env or ~/.muninn/mcp.token if empty)")
 	tlsCert := fs.String("tls-cert", "", "Path to TLS certificate file (PEM)")
 	tlsKey := fs.String("tls-key", "", "Path to TLS private key file (PEM)")
 	var logLevelStr string
@@ -500,7 +562,13 @@ func runMCPStandalone() {
 	}
 	fs.Parse(args)
 
-	// MCP token: flag override, else read from disk
+	// MCP token resolution order (highest to lowest priority):
+	//   1. --mcp-token flag  — explicit override for tests / container entrypoints
+	//   2. MUNINN_MCP_TOKEN env var — preferred for Docker / docker-compose deployments
+	//   3. ~/.muninn/mcp.token file — keeps the token out of `ps` output on bare-metal
+	if *mcpToken == "" {
+		*mcpToken = os.Getenv("MUNINN_MCP_TOKEN")
+	}
 	if *mcpToken == "" {
 		*mcpToken = readTokenFile()
 	}
@@ -756,7 +824,7 @@ func runMCPStandalone() {
 	ephemeralLn.Close()
 
 	mcpAddr := fmt.Sprintf("127.0.0.1:%d", ephemeralPort)
-	mcpServer := mcp.New(mcpAddr, mcpAdapter, *mcpToken, clientTLS)
+	mcpServer := mcp.New(mcpAddr, mcpAdapter, *mcpToken, authStore, clientTLS)
 
 	// Signal handling
 	sigCh := make(chan os.Signal, 2)

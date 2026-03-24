@@ -36,6 +36,10 @@ type JSONRPCError struct {
 type AuthContext struct {
 	Token      string
 	Authorized bool
+	// Populated when authenticated via an mk_ vault API key (not the static mdb_ token).
+	Vault    string // vault the key is scoped to; empty for static-token auth
+	Mode     string // "full", "observe", or "write"; empty for static-token auth
+	IsAPIKey bool   // true when authed via an mk_ vault API key
 }
 
 // ToolDefinition is one entry in the tools/list response.
@@ -178,8 +182,9 @@ type TraversalEdge struct {
 
 // ExplainRequest defines the context for a score explanation.
 type ExplainRequest struct {
-	EngramID string
-	Query    []string
+	EngramID  string
+	Query     []string
+	Embedding []float32 // optional client-provided query embedding
 }
 
 // ExplainComponents holds the per-component score breakdown.
@@ -261,11 +266,12 @@ type RecallTreeResult struct {
 
 // AddChildRequest is the input for a single child node in muninn_add_child.
 type AddChildRequest struct {
-	Concept string   `json:"concept"`
-	Content string   `json:"content"`
-	Type    string   `json:"type,omitempty"`
-	Tags    []string `json:"tags,omitempty"`
-	Ordinal *int32   `json:"ordinal,omitempty"` // nil = append at end
+	Concept   string    `json:"concept"`
+	Content   string    `json:"content"`
+	Type      string    `json:"type,omitempty"`
+	Tags      []string  `json:"tags,omitempty"`
+	Ordinal   *int32    `json:"ordinal,omitempty"` // nil = append at end
+	Embedding []float32 `json:"embedding,omitempty"`
 }
 
 // AddChildResult is returned by AddChild.

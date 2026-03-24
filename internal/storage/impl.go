@@ -14,6 +14,7 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/scrypster/muninndb/internal/provenance"
+	"github.com/scrypster/muninndb/internal/scoring"
 	"github.com/scrypster/muninndb/internal/storage/erf"
 	"github.com/scrypster/muninndb/internal/storage/keys"
 	"github.com/scrypster/muninndb/internal/wal"
@@ -41,6 +42,7 @@ type PebbleStore struct {
 	noSyncEngrams bool
 	vaultCounters sync.Map          // [8]byte -> *vaultCounter
 	provenance    *provenance.Store // Provenance chain for tracking engram creation/updates
+	scoringStore  *scoring.Store   // Per-vault learnable scoring weights
 	walSync       *walSyncer        // Periodic WAL fsync — covers all pebble.NoSync writes
 	counterFlush  *counterCoalescer // Coalesces vault count Pebble writes (100ms timer)
 	provWork      *provenanceWorker // NumCPU goroutines for provenance appends
@@ -178,6 +180,7 @@ func NewPebbleStore(db *pebble.DB, cfg PebbleStoreConfig) *PebbleStore {
 		db:               db,
 		cache:            NewL1Cache(cfg.CacheSize),
 		provenance:       prov,
+		scoringStore:     scoring.NewStore(db),
 		noSyncEngrams:    cfg.NoSyncEngrams,
 		metaCache:        metaCache,
 		vaultPrefixCache: vaultPrefixCache,
@@ -546,10 +549,81 @@ func (ps *PebbleStore) ReadCoherence(vaultPrefix [8]byte) ([7]int64, bool, error
 	return data, true, nil
 }
 
-// GetDB returns the underlying Pebble database instance.
-// Used for accessing Pebble directly (e.g., by scoring store).
-func (ps *PebbleStore) GetDB() *pebble.DB {
-	return ps.db
+// Checkpoint creates a Pebble checkpoint (consistent on-disk snapshot) at destDir.
+func (ps *PebbleStore) Checkpoint(destDir string) error {
+	return ps.db.Checkpoint(destDir)
+}
+
+// PebbleMetrics returns the raw Pebble metrics for observability and diagnostics.
+func (ps *PebbleStore) PebbleMetrics() *pebble.Metrics {
+	return ps.db.Metrics()
+}
+
+// ScoringStore returns the scoring.Store that manages per-vault learnable weights.
+// The store is constructed once at PebbleStore creation and shared — callers must
+// not close it independently.
+func (ps *PebbleStore) ScoringStore() *scoring.Store {
+	return ps.scoringStore
+}
+
+// ProvenanceStore returns the provenance.Store used for audit trail appends.
+// The store is constructed once at PebbleStore creation and shared — callers must
+// not close it independently.
+func (ps *PebbleStore) ProvenanceStore() *provenance.Store {
+	return ps.provenance
+}
+
+// ClearFTSKeys deletes all FTS index keys for the given vault workspace prefix via
+// range tombstones. Prefixes cleared: 0x05 (posting lists), 0x06 (trigrams),
+// 0x08 (FTS global stats), 0x09 (per-term stats).
+func (ps *PebbleStore) ClearFTSKeys(ws, wsPlus [8]byte) error {
+	ftsPrefixes := []byte{0x05, 0x06, 0x08, 0x09}
+	batch := ps.db.NewBatch()
+	for _, p := range ftsPrefixes {
+		lo := make([]byte, 9)
+		lo[0] = p
+		copy(lo[1:], ws[:])
+		hi := make([]byte, 9)
+		hi[0] = p
+		copy(hi[1:], wsPlus[:])
+		if err := batch.DeleteRange(lo, hi, nil); err != nil {
+			batch.Close()
+			return fmt.Errorf("storage: clear FTS keys 0x%02X: %w", p, err)
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		batch.Close()
+		return fmt.Errorf("storage: commit FTS clear batch: %w", err)
+	}
+	batch.Close()
+	return nil
+}
+
+// SetFTSVersionMarker writes the FTS schema version marker for the given workspace.
+func (ps *PebbleStore) SetFTSVersionMarker(ws [8]byte, version byte) error {
+	versionKey := keys.FTSVersionKey(ws)
+	if err := ps.db.Set(versionKey, []byte{version}, pebble.Sync); err != nil {
+		return fmt.Errorf("storage: set FTS version marker: %w", err)
+	}
+	return nil
+}
+
+// FTSVersionMarker reads the FTS schema version marker for the given workspace.
+// Returns the version byte, true if set, or 0, false if not yet written.
+func (ps *PebbleStore) FTSVersionMarker(ws [8]byte) (byte, bool, error) {
+	versionKey := keys.FTSVersionKey(ws)
+	val, closer, err := ps.db.Get(versionKey)
+	if errors.Is(err, pebble.ErrNotFound) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("storage: get FTS version marker: %w", err)
+	}
+	defer closer.Close()
+	if len(val) == 0 {
+		return 0, false, nil
+	}
+	return val[0], true, nil
 }
 
 // TransitionCache returns the tiered PAS transition cache.
