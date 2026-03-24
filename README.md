@@ -89,7 +89,7 @@ go build -o muninndb-lite ./cmd/muninn/
 
 ## Why This Fork Exists
 
-[MuninnDB](https://github.com/scrypster/muninndb) is a full-featured cognitive memory database with REST, gRPC, MCP, a web UI, multi-node clustering, built-in ONNX embeddings, and SDKs in four languages. It is designed to run as a standalone server.
+[MuninnDB](https://github.com/scrypster/muninndb) is a full-featured cognitive memory database with REST, gRPC, MCP, a web UI, multi-node clustering, built-in ONNX embeddings, and SDKs in six languages. It is designed to run as a standalone server.
 
 That's more than most AI agents need.
 
@@ -103,7 +103,7 @@ MuninnDB Lite exists for a different use case: **embedding cognitive memory dire
 | Web UI (dashboard, graph visualizer) | The AI agent is the interface |
 | Multi-node clustering (Raft consensus) | Single-node is sufficient for local agent memory |
 | Bundled ONNX embedder | Heavy native dependency; Ollama or API providers cover this |
-| SDKs (Go, Python, Node, PHP) | They target REST/gRPC which are removed; MCP is the access layer |
+| SDKs (Go, Python, Node, PHP, Kotlin, Swift) | They target REST/gRPC which are removed; MCP is the access layer |
 | Admin CLI (cluster, upgrade, REPL) | Not needed for embedded usage |
 
 ### What is identical
@@ -199,7 +199,8 @@ All 36 tools are identical to MuninnDB. For detailed parameter documentation, se
 | `muninn_entities` | List known entities |
 | `muninn_entity` | Entity details |
 | `muninn_entity_clusters` | Clusters of related entities |
-| `muninn_entity_state` | Entity state (timeline, relations) |
+| `muninn_entity_state` | Set lifecycle state of an entity (active, deprecated, merged, resolved) |
+| `muninn_entity_state_batch` | Batch update lifecycle state for multiple entities (max 50) |
 | `muninn_entity_timeline` | Entity timeline |
 | `muninn_find_by_entity` | Find memories mentioning an entity |
 | `muninn_merge_entity` | Merge duplicate entities |
@@ -247,6 +248,10 @@ When `entities` and `summary` are provided inline, no server-side LLM call is ne
 
 This is the recommended approach for MuninnDB Lite: the AI agent enriches at write time, no API key required on the server.
 
+### Client-provided embeddings
+
+Agents that compute their own embeddings can pass them directly via the `embedding` parameter on `muninn_remember`, `muninn_recall`, `muninn_explain`, `muninn_evolve`, and `muninn_add_child`. When provided, the server skips its own embedding step and uses the vector directly. The dimension must match the vault's existing embedding dimension.
+
 ---
 
 ## Optional: Embedding Providers
@@ -292,8 +297,9 @@ Server-side enrichment extracts entities, relationships, and summaries automatic
 | Provider | Configuration |
 |---|---|
 | Ollama | `MUNINN_ENRICH_URL=ollama://localhost:11434/llama3` |
-| OpenAI-compatible | `MUNINN_ENRICH_URL=openai://api.openai.com/gpt-4o-mini` + `MUNINN_OPENAI_KEY` |
+| OpenAI-compatible | `MUNINN_ENRICH_URL=openai://gpt-4o-mini` + `MUNINN_ENRICH_API_KEY` |
 | Anthropic | `MUNINN_ENRICH_URL=anthropic://claude-haiku-4-5-20251001` + `MUNINN_ANTHROPIC_KEY` |
+| Google Gemini | `MUNINN_ENRICH_URL=google://gemini-1.5-flash` + `MUNINN_GOOGLE_KEY` |
 
 For details on enrichment configuration, see [Plugins](https://github.com/scrypster/muninndb/blob/develop/docs/plugins.md) in the MuninnDB docs.
 
@@ -304,15 +310,29 @@ For details on enrichment configuration, see [Plugins](https://github.com/scryps
 | Env var | Default | Description |
 |---|---|---|
 | `MUNINNDB_DATA` | `~/.muninn/data` | Data directory |
+| **Embedding providers** | | |
 | `MUNINN_OLLAMA_URL` | *(none)* | Ollama embedding endpoint |
 | `MUNINN_OPENAI_KEY` | *(none)* | OpenAI API key (embeddings) |
+| `MUNINN_OPENAI_URL` | *(none)* | OpenAI base URL override (custom endpoints) |
 | `MUNINN_VOYAGE_KEY` | *(none)* | Voyage AI API key |
 | `MUNINN_COHERE_KEY` | *(none)* | Cohere API key |
-| `MUNINN_GOOGLE_KEY` | *(none)* | Google API key (Gemini embeddings) |
+| `MUNINN_GOOGLE_KEY` | *(none)* | Google API key (Gemini embeddings + enrichment) |
 | `MUNINN_JINA_KEY` | *(none)* | Jina API key |
 | `MUNINN_MISTRAL_KEY` | *(none)* | Mistral API key |
+| **LLM enrichment** | | |
 | `MUNINN_ENRICH_URL` | *(none)* | LLM enrichment provider URL |
-| `MUNINN_ANTHROPIC_KEY` | *(none)* | Anthropic API key (enrichment) |
+| `MUNINN_ENRICH_API_KEY` | *(none)* | API key for enrichment provider |
+| `MUNINN_ANTHROPIC_KEY` | *(none)* | Anthropic API key (enrichment fallback) |
+| `MUNINN_ENRICH_TIMEOUT` | *(none)* | Per-engram LLM timeout for replay_enrichment (e.g. `60s`, `2m`) |
+| **Auth & security** | | |
+| `MUNINN_MCP_TOKEN` | *(none)* | Bearer token for MCP auth (alternative to `--mcp-token` flag) |
+| `MUNINN_TLS_CERT` | *(none)* | Path to TLS certificate file (PEM) |
+| `MUNINN_TLS_KEY` | *(none)* | Path to TLS private key file (PEM) |
+| **Tuning** | | |
+| `MUNINN_MEM_LIMIT_GB` | `4` | Go memory limit in GB |
+| `MUNINN_GC_PERCENT` | `200` | Go GC target percentage |
+| `MUNINN_HNSW_WARN_THRESHOLD_MB` | *(none)* | Warn when HNSW in-memory vectors exceed N MB |
+| `MUNINN_HNSW_MAX_MB` | *(none)* | Skip HNSW insert when memory exceeds N MB |
 
 For the full configuration reference including vault-level cognitive tuning (plasticity presets, decay rates, Hebbian weights, ACT-R parameters), see [Feature Reference](https://github.com/scrypster/muninndb/blob/develop/docs/feature-reference.md) in the MuninnDB docs.
 
