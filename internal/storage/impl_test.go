@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/scrypster/muninndb/internal/storage/keys"
 	"github.com/scrypster/muninndb/internal/wal"
@@ -1110,5 +1111,111 @@ func TestBatchDelete(t *testing.T) {
 	}
 	if after != nil {
 		t.Errorf("BatchDelete: key still present after delete, value=%q", after)
+	}
+}
+
+// TestWriteReadDreamState verifies round-trip persistence of dream state.
+func TestWriteReadDreamState(t *testing.T) {
+	dir, err := os.MkdirTemp("", "muninndb-dream-state-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	db, err := OpenPebble(dir, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPebbleStore(db, PebbleStoreConfig{CacheSize: 100})
+	defer store.Close()
+	ws := store.VaultPrefix("dream-vault")
+
+	wantTime := time.Date(2026, 3, 28, 6, 0, 0, 0, time.UTC)
+	wantCount := int64(47)
+
+	if err := store.WriteDreamState(ws, wantTime, wantCount); err != nil {
+		t.Fatalf("WriteDreamState: %v", err)
+	}
+
+	gotTime, gotCount, ok, err := store.ReadDreamState(ws)
+	if err != nil {
+		t.Fatalf("ReadDreamState: %v", err)
+	}
+	if !ok {
+		t.Fatal("ReadDreamState returned ok=false after write")
+	}
+	if !gotTime.Equal(wantTime) {
+		t.Errorf("ReadDreamState time: got %v, want %v", gotTime, wantTime)
+	}
+	if gotCount != wantCount {
+		t.Errorf("ReadDreamState count: got %d, want %d", gotCount, wantCount)
+	}
+}
+
+// TestReadDreamStateMissing verifies that reading dream state for a vault
+// that has never been written returns ok=false with no error.
+func TestReadDreamStateMissing(t *testing.T) {
+	dir, err := os.MkdirTemp("", "muninndb-dream-miss-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	db, err := OpenPebble(dir, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPebbleStore(db, PebbleStoreConfig{CacheSize: 100})
+	defer store.Close()
+	ws := store.VaultPrefix("never-dreamed")
+
+	_, _, ok, err := store.ReadDreamState(ws)
+	if err != nil {
+		t.Fatalf("ReadDreamState on missing key: %v", err)
+	}
+	if ok {
+		t.Error("ReadDreamState on missing key returned ok=true, want false")
+	}
+}
+
+// TestWriteDreamStateOverwrite verifies that writing dream state twice
+// overwrites the previous value.
+func TestWriteDreamStateOverwrite(t *testing.T) {
+	dir, err := os.MkdirTemp("", "muninndb-dream-overwrite-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	db, err := OpenPebble(dir, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPebbleStore(db, PebbleStoreConfig{CacheSize: 100})
+	defer store.Close()
+	ws := store.VaultPrefix("overwrite-vault")
+
+	t1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := store.WriteDreamState(ws, t1, 10); err != nil {
+		t.Fatal(err)
+	}
+
+	t2 := time.Date(2026, 3, 28, 12, 0, 0, 0, time.UTC)
+	if err := store.WriteDreamState(ws, t2, 47); err != nil {
+		t.Fatal(err)
+	}
+
+	gotTime, gotCount, ok, err := store.ReadDreamState(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("ReadDreamState returned ok=false")
+	}
+	if !gotTime.Equal(t2) {
+		t.Errorf("time: got %v, want %v", gotTime, t2)
+	}
+	if gotCount != 47 {
+		t.Errorf("count: got %d, want 47", gotCount)
 	}
 }

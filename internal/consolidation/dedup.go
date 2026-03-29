@@ -13,7 +13,10 @@ import (
 // (cosine similarity >= 0.95). The higher-confidence engram is kept as the representative,
 // and the other is archived. In DryRun mode, no mutations occur.
 func (w *Worker) runPhase2Dedup(ctx context.Context, store *storage.PebbleStore, wsPrefix [8]byte, report *ConsolidationReport, vault string) error {
-	const similarityThreshold = 0.95
+	similarityThreshold := float32(0.95)
+	if w.DedupThreshold > 0 {
+		similarityThreshold = w.DedupThreshold
+	}
 
 	// Scan all engrams in the vault
 	allIDs, err := scanAllEngramIDs(ctx, store, wsPrefix)

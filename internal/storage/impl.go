@@ -549,6 +549,34 @@ func (ps *PebbleStore) ReadCoherence(vaultPrefix [8]byte) ([7]int64, bool, error
 	return data, true, nil
 }
 
+// WriteDreamState persists per-vault dream state to Pebble.
+// Value is 16 bytes: last_dream_at (BigEndian int64 unix nanos) + engrams_at_dream (BigEndian int64).
+func (ps *PebbleStore) WriteDreamState(vaultPrefix [8]byte, lastDreamAt time.Time, engramsAtDream int64) error {
+	buf := make([]byte, 16)
+	binary.BigEndian.PutUint64(buf[0:8], uint64(lastDreamAt.UnixNano()))
+	binary.BigEndian.PutUint64(buf[8:16], uint64(engramsAtDream))
+	return ps.db.Set(keys.DreamStateKey(vaultPrefix), buf, pebble.Sync)
+}
+
+// ReadDreamState loads per-vault dream state from Pebble.
+// Returns (lastDreamAt, engramsAtDream, true, nil) if found, (zero, 0, false, nil) if not found.
+func (ps *PebbleStore) ReadDreamState(vaultPrefix [8]byte) (time.Time, int64, bool, error) {
+	val, closer, err := ps.db.Get(keys.DreamStateKey(vaultPrefix))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return time.Time{}, 0, false, nil
+	}
+	if err != nil {
+		return time.Time{}, 0, false, fmt.Errorf("read dream state: %w", err)
+	}
+	defer closer.Close()
+	if len(val) != 16 {
+		return time.Time{}, 0, false, fmt.Errorf("dream state: unexpected value length %d", len(val))
+	}
+	nanos := int64(binary.BigEndian.Uint64(val[0:8]))
+	engramCount := int64(binary.BigEndian.Uint64(val[8:16]))
+	return time.Unix(0, nanos), engramCount, true, nil
+}
+
 // Checkpoint creates a Pebble checkpoint (consistent on-disk snapshot) at destDir.
 func (ps *PebbleStore) Checkpoint(destDir string) error {
 	return ps.db.Checkpoint(destDir)

@@ -748,3 +748,13 @@ func ArchiveAssocRangeEnd(ws [8]byte) []byte {
 	}
 	return end
 }
+
+// DreamStateKey returns the 9-byte Pebble key for per-vault dream state.
+// Key layout: [0x27][8-byte vault prefix]
+// Value layout: 16 bytes (last_dream_at int64 + engrams_at_dream int64, BigEndian)
+func DreamStateKey(vaultPrefix [8]byte) []byte {
+	key := make([]byte, 9)
+	key[0] = 0x27
+	copy(key[1:], vaultPrefix[:])
+	return key
+}

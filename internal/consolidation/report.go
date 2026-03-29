@@ -14,4 +14,8 @@ type ConsolidationReport struct {
 	InferredEdges  int           // new transitive associations inferred
 	DryRun         bool          // true if no mutations occurred
 	Errors         []string      // non-fatal errors encountered per phase
+
+	// Dream-specific fields (populated by DreamOnce, nil/zero for RunOnce)
+	Orient       *VaultSummary // Phase 0 vault summary
+	LegalSkipped int           // legal engrams skipped in Phase 2b
 }

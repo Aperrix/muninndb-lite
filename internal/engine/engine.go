@@ -901,9 +901,13 @@ func (e *Engine) Write(ctx context.Context, req *mbp.WriteRequest) (*mbp.WriteRe
 		ws, _ := e.store.FindVaultPrefix(id)
 		var linkedEntityNames []string
 		for _, ent := range callerEntities {
+			typ := strings.ToLower(strings.TrimSpace(ent.Type))
+			if typ == "" {
+				typ = "other"
+			}
 			record := storage.EntityRecord{
 				Name:       ent.Name,
-				Type:       ent.Type,
+				Type:       typ,
 				Confidence: 1.0,
 			}
 			if err := e.store.UpsertEntityRecord(ctx, record, "inline"); err != nil {
@@ -1297,9 +1301,13 @@ func (e *Engine) WriteBatch(ctx context.Context, reqs []*mbp.WriteRequest) ([]*m
 			ws, _ := e.store.FindVaultPrefix(id)
 			var linkedEntityNames []string
 			for _, ent := range p.callerEntities {
+				typ := strings.ToLower(strings.TrimSpace(ent.Type))
+				if typ == "" {
+					typ = "other"
+				}
 				record := storage.EntityRecord{
 					Name:       ent.Name,
-					Type:       ent.Type,
+					Type:       typ,
 					Confidence: 1.0,
 				}
 				if err := e.store.UpsertEntityRecord(ctx, record, "inline"); err != nil {
