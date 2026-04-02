@@ -9,6 +9,25 @@ import (
 	"github.com/scrypster/muninndb/internal/plugin"
 )
 
+// knownEntityTypes mirrors the entity types recognised by the UI colour map
+// in web/static/js/app.js:getEntityTypeColor. Extend both together.
+var knownEntityTypes = map[string]bool{
+	"person":       true,
+	"organization": true,
+	"project":      true,
+	"tool":         true,
+	"framework":    true,
+	"language":     true,
+	"database":     true,
+	"service":      true,
+	"technology":   true,
+	"location":     true,
+	"concept":      true,
+	"product":      true,
+	"event":        true,
+	"other":        true,
+}
+
 // extractJSON finds and returns the first valid JSON structure in a string.
 // Handles markdown code fences and trailing text.
 func extractJSON(s string) string {
@@ -267,27 +286,25 @@ func validateAndDedupeEntities(entities []plugin.ExtractedEntity) []plugin.Extra
 	return result
 }
 
-// normalizeEntityType validates and normalizes entity type strings.
+// normalizeEntityType normalizes entity type strings to lowercase and
+// validates against the known types recognised by the UI colour map.
+// Known types are returned as-is after normalisation. Unknown types are
+// returned as their normalised string rather than being silently coerced
+// to "service", which would corrupt semantic information and cause the
+// graph UI to display incorrect colours for any type not in the original
+// eight-item allowlist (e.g. "technology", "location", "concept", "event").
 func normalizeEntityType(t string) string {
 	t = strings.ToLower(strings.TrimSpace(t))
 
-	validTypes := map[string]bool{
-		"person":       true,
-		"organization": true,
-		"project":      true,
-		"tool":         true,
-		"framework":    true,
-		"language":     true,
-		"database":     true,
-		"service":      true,
-	}
-
-	if validTypes[t] {
+	if knownEntityTypes[t] || t == "" {
 		return t
 	}
 
-	// Default to "service" for unknown types
-	return "service"
+	// Pass through unrecognised types rather than coercing to "service".
+	// This preserves the LLM's semantic intent and avoids silent data
+	// corruption when new types are added to the UI before the allowlist
+	// is updated.
+	return t
 }
 
 // validateRelationships validates relationship fields.

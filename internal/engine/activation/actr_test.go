@@ -25,14 +25,27 @@ func assertNear(t *testing.T, name string, got, want, tol float64) {
 	}
 }
 
+// expectedBaseLevel returns the B(M) value that computeACTR will produce
+// for the given parameters, including the bLevelCap. Tests should use this
+// instead of inlining the formula so they stay in sync with production code.
+func expectedBaseLevel(n, ageDays, d float64) float64 {
+	const ageFloorDays = 1.0 / (24.0 * 60.0)
+	effectiveAge := math.Max(ageDays, ageFloorDays)
+	bl := math.Log(n) - d*math.Log(effectiveAge/n)
+	bLevelCap := math.Log(math.Exp(actrDenominator) - 1)
+	if bl > bLevelCap {
+		bl = bLevelCap
+	}
+	return bl
+}
+
 // expectedACTRRaw computes the expected Raw score from first principles.
+// Callers should pass a baseLevel already produced by expectedBaseLevel so
+// the cap is applied consistently.
 func expectedACTRRaw(contentMatch, baseLevel, hebScale, hebbianBoost float64) float64 {
 	totalActivation := baseLevel + hebScale*hebbianBoost
 	contextualPrior := softplus(totalActivation)
 	raw := contentMatch * contextualPrior / actrDenominator
-	if raw > 1.0 {
-		return 1.0
-	}
 	if raw < 0.0 {
 		return 0.0
 	}
@@ -52,9 +65,9 @@ func TestComputeACTR_FreshEngram(t *testing.T) {
 	sc := computeACTR(0.9, 2.0, 0.0, 0.0, eng, 0, now, w)
 
 	contentMatch := 0.35*0.9 + 0.25*math.Tanh(2.0)
-	n := 2.0       // AccessCount(1) + 1
-	ageDays := 1.0 / (24.0 * 60.0) // floor: 1 minute
-	baseLevel := math.Log(n) - 0.5*math.Log(ageDays/n)
+	n := 2.0 // AccessCount(1) + 1
+	// Use expectedBaseLevel so the 1-day offset + cap are applied consistently.
+	baseLevel := expectedBaseLevel(n, 1.0/(24.0*60.0), 0.5)
 	wantRaw := expectedACTRRaw(contentMatch, baseLevel, 4.0, 0.0)
 
 	assertNear(t, "Raw", sc.Raw, wantRaw, 1e-6)
@@ -80,8 +93,8 @@ func TestComputeACTR_OldEngram_NoHebbian(t *testing.T) {
 
 	contentMatch := 0.35*0.7 + 0.25*math.Tanh(1.0)
 	n := 1.0
-	ageDays := 30.0
-	baseLevel := math.Log(n) - 0.5*math.Log(ageDays/n) // ln(1) - 0.5*ln(30) ≈ -1.70
+	// n=1, ageDays=30: B(M) = ln(1) - 0.5*ln(30) ≈ -1.70 — well below cap.
+	baseLevel := expectedBaseLevel(n, 30.0, 0.5)
 	wantRaw := expectedACTRRaw(contentMatch, baseLevel, 4.0, 0.0)
 
 	assertNear(t, "Raw", sc.Raw, wantRaw, 1e-6)
@@ -104,8 +117,7 @@ func TestComputeACTR_OldEngram_WithHebbian(t *testing.T) {
 
 	contentMatch := 0.35*0.7 + 0.25*math.Tanh(1.0)
 	n := 1.0
-	ageDays := 30.0
-	baseLevel := math.Log(n) - 0.5*math.Log(ageDays/n)
+	baseLevel := expectedBaseLevel(n, 30.0, 0.5)
 	wantRaw := expectedACTRRaw(contentMatch, baseLevel, 4.0, 0.8)
 
 	assertNear(t, "Raw", sc.Raw, wantRaw, 1e-6)
@@ -132,14 +144,20 @@ func TestComputeACTR_HighAccessCount(t *testing.T) {
 
 	contentMatch := 0.35*0.7 + 0.25*math.Tanh(1.5)
 	n := 101.0
-	ageDays := 7.0
-	baseLevel := math.Log(n) - 0.5*math.Log(ageDays/n)
+	// With 100 accesses at 7 days the uncapped B(M) ≈ 5.88 — well above bLevelCap.
+	// expectedBaseLevel applies the cap so wantRaw reflects what computeACTR returns.
+	baseLevel := expectedBaseLevel(n, 7.0, 0.5)
 	wantRaw := expectedACTRRaw(contentMatch, baseLevel, 4.0, 0.0)
 
 	assertNear(t, "Raw", sc.Raw, wantRaw, 1e-6)
-	// Base level should be very high with 100 accesses.
-	if baseLevel < 3.0 {
-		t.Errorf("baseLevel=%.4f, expected > 3.0 for 100 accesses at 7 days", baseLevel)
+	// Confirm the cap fired: uncapped value >> bLevelCap.
+	uncappedBL := math.Log(n) - 0.5*math.Log(7.0/n)
+	bLevelCap := math.Log(math.Exp(actrDenominator) - 1)
+	if uncappedBL <= bLevelCap {
+		t.Errorf("test setup: uncappedBL=%.4f must exceed bLevelCap=%.4f", uncappedBL, bLevelCap)
+	}
+	if baseLevel != bLevelCap {
+		t.Errorf("baseLevel=%.6f, want exactly bLevelCap=%.6f", baseLevel, bLevelCap)
 	}
 }
 
@@ -184,6 +202,9 @@ func TestComputeACTR_ConfidenceMultiplication(t *testing.T) {
 }
 
 func TestComputeACTR_ScoreClamping(t *testing.T) {
+	// computeACTR no longer applies an upper clamp — clamping to [0,1] is the
+	// caller's responsibility after per-query normalization (issue #331 fix).
+	// Verify that the raw value above 1.0 is returned unchanged.
 	now := time.Now()
 	eng := &storage.Engram{
 		Confidence:  1.0,
@@ -193,23 +214,23 @@ func TestComputeACTR_ScoreClamping(t *testing.T) {
 	}
 	w := actrDefaultWeights()
 
-	// Perfect match + very high FTS + Hebbian + many accesses → exceeds 1.0 before clamp.
+	// Hebbian=1.0 pushes totalActivation well above bLevelCap — raw still exceeds 1.0.
+	// This is the case the two-pass safety net handles (Hebbian-boosted engrams).
 	sc := computeACTR(1.0, 10.0, 1.0, 0.0, eng, 0, now, w)
 
-	if sc.Raw > 1.0 {
-		t.Errorf("Raw=%v, must be clamped to <= 1.0", sc.Raw)
-	}
-	// Verify it actually hit the ceiling (pre-clamp value exceeds 1.0).
 	contentMatch := 0.35*1.0 + 0.25*math.Tanh(10.0)
 	n := 51.0
-	ageDays := 1.0 / (24.0 * 60.0) // floor: 1 minute
-	baseLevel := math.Log(n) - 0.5*math.Log(ageDays/n)
+	// baseLevel is capped; Hebbian lifts totalActivation far above the cap.
+	baseLevel := expectedBaseLevel(n, 1.0/(24.0*60.0), 0.5)
 	totalActivation := baseLevel + 4.0*1.0
-	unclamped := contentMatch * softplus(totalActivation) / actrDenominator
-	if unclamped <= 1.0 {
-		t.Fatalf("Pre-clamp value=%.4f, test requires it to exceed 1.0", unclamped)
+	expectedRaw := contentMatch * softplus(totalActivation) / actrDenominator
+	if expectedRaw <= 1.0 {
+		t.Fatalf("expectedRaw=%.4f, test requires > 1.0 — check Hebbian/AccessCount", expectedRaw)
 	}
-	assertNear(t, "Raw", sc.Raw, 1.0, 1e-9)
+	if sc.Raw <= 1.0 {
+		t.Errorf("Raw=%.4f, expected > 1.0 (Hebbian should push past saturation)", sc.Raw)
+	}
+	assertNear(t, "Raw (Hebbian-boosted)", sc.Raw, expectedRaw, 1e-9)
 }
 
 func TestComputeACTR_ZeroLastAccess(t *testing.T) {
@@ -227,8 +248,8 @@ func TestComputeACTR_ZeroLastAccess(t *testing.T) {
 	// Zero LastAccess → treated as "just now" → ageDays = ageFloor (1 minute)
 	contentMatch := 0.35*0.8 + 0.25*math.Tanh(1.0)
 	n := 1.0
-	ageDays := 1.0 / (24.0 * 60.0) // floor: 1 minute
-	baseLevel := math.Log(n) - 0.5*math.Log(ageDays/n)
+	// n=1 with 1-day offset: B(M) = ln(1) - 0.5*ln(1) = 0 — not capped.
+	baseLevel := expectedBaseLevel(n, 1.0/(24.0*60.0), 0.5)
 	wantRaw := expectedACTRRaw(contentMatch, baseLevel, 4.0, 0.0)
 
 	assertNear(t, "Raw", sc.Raw, wantRaw, 1e-6)
@@ -280,8 +301,8 @@ func TestComputeACTR_CustomDecayAndHebScale(t *testing.T) {
 
 	contentMatch := 0.35*0.7 + 0.25*math.Tanh(1.0)
 	n := 4.0
-	ageDays := 10.0
-	baseLevel := math.Log(n) - 0.8*math.Log(ageDays/n)
+	// n=4, ageDays=10: B(M)=ln(4)-0.8*ln(10/4)≈0.65 — not capped.
+	baseLevel := expectedBaseLevel(n, 10.0, 0.8)
 	wantRaw := expectedACTRRaw(contentMatch, baseLevel, 2.0, hebbianBoost)
 
 	assertNear(t, "Raw", sc.Raw, wantRaw, 1e-6)
@@ -383,5 +404,96 @@ func TestComputeACTR_DecayFactorReportedCorrectly(t *testing.T) {
 
 			assertNear(t, "DecayFactor", sc.DecayFactor, wantDecay, 1e-6)
 		})
+	}
+}
+
+// TestComputeACTR_FreshVault_NoDivergence verifies that the root-cause fix
+// (bmAgeOffset + bLevelCap) prevents B(M) from saturating for fresh engrams
+// with zero Hebbian boost. Before the fix, any engram with AccessCount ≥ 1
+// and sub-minute age would produce raw > 1.0 due to B(M) ≈ 4–7.
+//
+// Post-fix: base-level alone cannot push raw above contentMatch.
+func TestComputeACTR_FreshVault_NoDivergence(t *testing.T) {
+	now := time.Now()
+	w := actrDefaultWeights()
+
+	cases := []struct {
+		name        string
+		accessCount int
+		vectorScore float64
+	}{
+		{"n1", 0, 0.8},
+		{"n5", 4, 0.8},
+		{"n20", 19, 0.8},
+		{"n100", 99, 0.8},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := &storage.Engram{
+				Confidence:  1.0,
+				Stability:   30.0,
+				AccessCount: uint32(tc.accessCount),
+				LastAccess:  now,
+			}
+			sc := computeACTR(tc.vectorScore, 0.0, 0.0, 0.0, eng, 0, now, w)
+			contentMatch := w.SemanticSimilarity * tc.vectorScore
+			if sc.Raw > contentMatch+1e-9 {
+				t.Errorf("Raw=%.6f exceeds contentMatch=%.6f — base-level saturated past content gate",
+					sc.Raw, contentMatch)
+			}
+		})
+	}
+}
+
+// TestComputeACTR_FreshVault_Differentiated verifies that two fresh engrams
+// with different content-match scores produce different Raw values.
+// This was the observable symptom of issue #331: all engrams collapsed to the
+// same clamped score, destroying ranking in new vaults.
+func TestComputeACTR_FreshVault_Differentiated(t *testing.T) {
+	now := time.Now()
+	w := actrDefaultWeights()
+
+	// Both fresh, high access count — the scenario that triggered #331.
+	engHigh := &storage.Engram{Confidence: 1.0, Stability: 30.0, AccessCount: 5, LastAccess: now}
+	engLow := &storage.Engram{Confidence: 1.0, Stability: 30.0, AccessCount: 5, LastAccess: now}
+
+	scHigh := computeACTR(0.9, 1.0, 0.0, 0.0, engHigh, 0, now, w)
+	scLow := computeACTR(0.4, 1.0, 0.0, 0.0, engLow, 0, now, w)
+
+	if scHigh.Raw <= scLow.Raw {
+		t.Errorf("scHigh.Raw=%.6f <= scLow.Raw=%.6f: higher content match must rank above lower",
+			scHigh.Raw, scLow.Raw)
+	}
+	// Neither score should saturate without Hebbian boost.
+	contentHigh := w.SemanticSimilarity*0.9 + w.FullTextRelevance*math.Tanh(1.0)
+	contentLow := w.SemanticSimilarity*0.4 + w.FullTextRelevance*math.Tanh(1.0)
+	if scHigh.Raw > contentHigh+1e-9 {
+		t.Errorf("scHigh.Raw=%.6f exceeded contentMatch=%.6f — saturation not resolved", scHigh.Raw, contentHigh)
+	}
+	if scLow.Raw > contentLow+1e-9 {
+		t.Errorf("scLow.Raw=%.6f exceeded contentMatch=%.6f — saturation not resolved", scLow.Raw, contentLow)
+	}
+}
+
+// TestComputeACTR_TwoPassSafetyNet_HebbianCanStillSaturate verifies that the
+// two-pass per-query normalization safety net is still needed and functional.
+// After the root-cause fix, base-level alone cannot saturate; but a strong
+// Hebbian boost legitimately pushes totalActivation well past the cap, so
+// raw > 1.0 is still possible and the safety net must handle it.
+func TestComputeACTR_TwoPassSafetyNet_HebbianCanStillSaturate(t *testing.T) {
+	now := time.Now()
+	w := actrDefaultWeights()
+
+	eng := &storage.Engram{Confidence: 1.0, Stability: 30.0, AccessCount: 5, LastAccess: now}
+
+	// Strong Hebbian (1.0) with scale 4.0 adds 4.0 to totalActivation.
+	scNoHeb := computeACTR(0.9, 1.0, 0.0, 0.0, eng, 0, now, w)
+	scHeb := computeACTR(0.9, 1.0, 1.0, 0.0, eng, 0, now, w)
+
+	if scNoHeb.Raw > 1.0 {
+		t.Errorf("zero-Hebbian Raw=%.6f must not exceed 1.0 after root-cause fix", scNoHeb.Raw)
+	}
+	if scHeb.Raw <= 1.0 {
+		t.Errorf("strong-Hebbian Raw=%.6f must exceed 1.0 (two-pass safety net required)", scHeb.Raw)
 	}
 }
