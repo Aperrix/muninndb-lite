@@ -1,6 +1,6 @@
 # MuninnDB vs Shodh Memory — Feature Comparison
 
-Comparative analysis of [MuninnDB](https://github.com/scrypster/muninndb) (v0.4.8-alpha) and [Shodh Memory](https://github.com/varun29ankuS/shodh-memory). Analysis date: 2026-03-31.
+Comparative analysis of [MuninnDB](https://github.com/scrypster/muninndb) (v0.4.9-alpha) and [Shodh Memory](https://github.com/varun29ankuS/shodh-memory). Analysis date: 2026-04-02. Revised after upstream code review.
 
 ---
 
@@ -29,7 +29,7 @@ Comparative analysis of [MuninnDB](https://github.com/scrypster/muninndb) (v0.4.
 | **Promotion** | No promotion — activation level determines retrieval rank continuously | Automatic: importance >= 0.4 + 5min -> Session; >= 0.6 + 1h -> Long-Term |
 | **Memory types** | 12 built-in (fact, decision, observation, preference, issue, task, procedure, event, goal, constraint, identity, reference) + free-form labels | 13 types (Observation, Decision, Learning, Error, Discovery, Pattern, Context, Task, CodeEdit, FileAccess, Search, Command, Conversation) + Intention |
 | **Binary format** | ERF (Engram Record Format) — custom binary with magic bytes 0x4D554E4E, CRC-16, Zstd compression, v1/v2 versioning | Standard serde serialization to RocksDB |
-| **Deduplication** | Semantic (cosine >= 0.95 in consolidation pipeline) | **Content-hash (SHA-256)** at write time + semantic |
+| **Deduplication** | Write-time novelty detector (Jaccard >= 0.70, creates RelRefines) + consolidation semantic dedup (cosine >= 0.95) | **Content-hash (SHA-256)** at write time + semantic |
 | **Soft-delete** | Yes, 7-day recovery window (muninn_restore) | No |
 | **Versioning** | Yes (muninn_evolve archives previous version) | No |
 | **Vault isolation** | Full vault system with per-vault plasticity presets (default, reference, scratchpad, knowledge-graph), 30+ tunable parameters | Per user_id only (simple prefix isolation) |
@@ -56,19 +56,19 @@ Comparative analysis of [MuninnDB](https://github.com/scrypster/muninndb) (v0.4.
 
 | | MuninnDB | Shodh Memory |
 |---|---|---|
-| **Pipeline** | BM25 -> HNSW vector -> BFS graph traversal -> cognitive scoring (ACT-R or CGDN) | BM25 -> Vector (Vamana) -> **RRF fusion** (BM25 0.35 + Vector 0.40 + Graph 0.25) -> **Cross-encoder rerank** -> cognitive boost |
+| **Pipeline** | BM25 + HNSW + decay + time + transition candidates -> **phase3RRF fusion** -> ACT-R scoring (default) or CGDN | BM25 -> Vector (Vamana) -> **RRF fusion** (BM25 0.35 + Vector 0.40 + graph dynamic/density-based) -> cognitive boost |
 | **Traversal profiles** | 5 profiles: default (balanced), causal (cause/effect chains), confirmatory (supporting evidence), adversarial (conflicts), structural (hierarchy) | 3 modes: semantic, associative, hybrid |
 | **Recall modes** | 4 modes: semantic (high-precision vector), recent (recency-biased), balanced (defaults), deep (4 hops, threshold 0.1) | Same 3: semantic, associative, hybrid |
 | **Graph traversal** | BFS with 0.7x hop penalty, max 500 nodes, 20 edges/node, weight-sorted prefix keys, optional entity-link following (0.1 weight) | Dijkstra-style best-first with edge weights, ontological type-aware filtering |
 | **Score explain** | Yes (muninn_explain — full breakdown per memory) | No |
-| **Proactive surfacing** | **No** — pull-only via muninn_recall | **Yes** — push-based, automatically surfaces relevant memories based on current context without explicit query, < 30ms latency target |
+| **Proactive surfacing** | **Yes** — trigger system with HNSW sweep every 30s, context-based subscriptions, ActivationPush delivery | **Yes** — push-based in MCP bridge layer, surfaces memories on every non-memory tool call, < 30ms target |
 | **BM25 field weights** | Concept 3.0, Tags 2.0, Content 1.0, CreatedBy 0.5 | Not documented (Tantivy-based) |
 
 ## Entity & Knowledge Graph
 
 | | MuninnDB | Shodh Memory |
 |---|---|---|
-| **Entity extraction** | LLM-based (4 providers: Ollama, OpenAI, Anthropic, Google) or client-provided inline | **Local** — POS tagging + YAKE keyword extraction + proper noun detection + optional neural NER (ONNX). Zero LLM calls. |
+| **Entity extraction** | LLM-based (4 providers: Ollama, OpenAI, Anthropic, Google) or client-provided inline | **Local** — Capitalization-based proper noun detection + YAKE keyword extraction (Rust crate) + optional neural NER (ONNX bert-tiny). Zero LLM calls. |
 | **Entity types** | 13 types: person, organization, location, concept, technology, project, tool, database, service, framework, language, product, event | 10+ types: Person, Organization, Location, Technology, Concept, Event, Date, Product, Skill, Keyword |
 | **Entity lifecycle** | Rich — active, deprecated, merged, resolved. Tools: state, state_batch, similar_entities, merge_entity | Basic — entities, relationships, episodes |
 | **Entity timeline** | Yes (muninn_entity_timeline) | Episode-based temporal tracking |
@@ -164,14 +164,14 @@ Shodh has no equivalent — all memories share the same cognitive pipeline confi
 
 | Feature | Detail |
 |---|---|
-| **Proactive memory surfacing** | Push-based: auto-surfaces relevant memories on every non-memory tool call, < 30ms target |
+| **MCP bridge-level proactive surfacing** | Intercepts every non-memory tool call in TS bridge layer (MuninnDB has server-side trigger system instead) |
 | **Implicit feedback** | Learns from agent behavior (entity overlap, tool-usage attribution, semantic similarity, repetition/topic detection), no explicit signal needed |
 | **Memory replay** | Hippocampal-style consolidation (Rasch & Born 2013), high-value memories replayed with co-activation strengthening |
 | **Memory interference** | Retroactive + proactive interference modeling (Anderson & Neely 1996), competition mechanics during retrieval |
 | **Hybrid exponential + power-law decay** | Wixted 2004: exponential < 3d (noise filtering), power-law >= 3d (heavy tail preserves old important memories) |
 | **LTP (Long-Term Potentiation)** | Hebbian edges become permanent after threshold co-activations, slower decay (0.5x lambda) |
 | **GTD task management** | 12 todo tools + 4 project tools + 3 reminder tools = complete Getting Things Done system |
-| **Cross-encoder reranking** | Re-scores top candidates with a more expensive model after initial retrieval |
+| **Cross-encoder reranking** | Mentioned in Shodh's module header comment but **not implemented** — no actual cross-encoder code exists |
 | **RRF (Reciprocal Rank Fusion)** | Score fusion: BM25 (0.35) + Vector (0.40) + Graph (0.25) instead of simple weighted sum |
 | **Content-hash dedup at write time** | SHA-256 check prevents exact duplicates before storage |
 | **Emotional valence/arousal** | Per-memory sentiment metadata (-1.0 to 1.0 valence, 0.0 to 1.0 arousal) |
@@ -182,7 +182,7 @@ Shodh has no equivalent — all memories share the same cognitive pipeline confi
 | **MIF encrypted export** | AES-256-GCM encrypted memory interchange format |
 | **MCP prompts** | 6 slash commands (quick_recall, session_summary, what_i_know, pending_work, recent_memories, memory_health) |
 | **Multimodal references** | Image, audio, video, document URIs with MIME types |
-| **Zero-LLM entity extraction** | POS tagging + YAKE + optional neural NER — no external API needed |
+| **Zero-LLM entity extraction** | Capitalization heuristics + YAKE (Rust) + optional neural NER (ONNX) — no external API needed |
 | **Python bindings** | Native Rust -> Python via PyO3/maturin |
 | **3-tier memory model** | Working (in-memory) -> Session (ephemeral) -> Long-Term (persistent) with automatic promotion |
 
@@ -200,13 +200,13 @@ Ranked by potential impact:
 
 **Implementation complexity:** Low — modify the formula in `internal/cognitive/decay.go`. The transition point (3 days) and power-law exponent are simple constants. Could be a plasticity parameter.
 
-### 2. Proactive Memory Surfacing (HIGH IMPACT)
+### 2. MCP Bridge-Level Proactive Surfacing (MEDIUM IMPACT — MuninnDB already has server-side equivalent)
 
-**What:** Instead of requiring explicit `muninn_recall`, automatically surface relevant memories when the agent's context changes — without the agent having to know it should remember something.
+**What:** Shodh intercepts every non-memory MCP tool call in the TypeScript bridge layer and appends relevant memories to the response. This is a transport-layer approach vs MuninnDB's server-side trigger system (HNSW sweep every 30s with ActivationPush).
 
-**Why it matters:** The fundamental limitation of pull-based recall: an agent that doesn't know it should remember something will never query for it. Proactive surfacing solves the "unknown unknowns" problem. Shodh does this in the MCP bridge layer, surfacing memories with every non-memory tool call.
+**Why it matters:** MuninnDB's trigger system is more architecturally sound (server-side, configurable thresholds, circuit breakers) but requires explicit subscription setup. Shodh's approach is zero-config — it works immediately without the agent needing to subscribe. The two approaches are complementary, not exclusive.
 
-**Implementation complexity:** Medium — MuninnDB already has the trigger system (`internal/engine/trigger/`) with context-based subscriptions and delta thresholds. Extending this to auto-surface memories on context change is architecturally aligned. Could be a new MCP tool `muninn_proactive` or built into the trigger system.
+**Implementation complexity:** Low — could be a thin MCP-layer wrapper that subscribes to the trigger system automatically on session start, or a `muninn_proactive` tool that returns recent ActivationPush results.
 
 ### 3. Implicit Feedback (HIGH IMPACT)
 
@@ -238,7 +238,9 @@ Ranked by potential impact:
 
 **Why it matters:** Bi-encoder retrieval (HNSW) is fast but approximate — it embeds query and document independently. Cross-encoder scoring is 10-100x more accurate because it processes the pair jointly, capturing fine-grained interactions. This is the standard pattern in production retrieval systems (retrieve-then-rerank).
 
-**Implementation complexity:** Medium — requires either a local ONNX cross-encoder model or an LLM API call. Could be an optional enrichment plugin. Latency cost: 50-200ms for top-10 reranking with a small cross-encoder.
+**Note:** Shodh Memory lists cross-encoder reranking in a module header comment but has not implemented it. This is a novel feature for both systems.
+
+**Implementation complexity:** Medium — requires either a local ONNX cross-encoder model (upstream MuninnDB has ONNX runtime for bge-small-en-v1.5, but cross-encoder needs a different model/session config) or an LLM API call. Could be an optional plugin. Latency cost: 50-200ms for top-10 reranking.
 
 ### 7. LTP (Long-Term Potentiation) on Associations (MEDIUM IMPACT)
 
