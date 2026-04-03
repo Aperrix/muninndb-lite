@@ -905,16 +905,21 @@ func runMCPStandalone() {
 		// Server likely started successfully.
 	}
 
-	slog.Info("muninndb-lite started (MCP stdio mode)", "mcp_addr", mcpAddr)
-
-	// Set the proxy URL to point at our ephemeral MCP server and run the
-	// stdio proxy on the main goroutine. When stdin closes (EOF), the proxy
-	// returns and we trigger graceful shutdown.
-	mcpProxyURL = fmt.Sprintf("http://127.0.0.1:%d/mcp", ephemeralPort)
-	runMCPStdioWith(os.Stdin, os.Stdout)
-
-	// stdin closed — begin shutdown
-	slog.Info("stdin closed, shutting down")
+	if headlessMode {
+		slog.Info("muninndb-lite started (headless daemon mode)", "mcp_internal", mcpAddr)
+		// Headless: expose on :defaultMCPPort via reverse proxy + idle watchdog.
+		// Blocks until idle timeout or SIGTERM.
+		runHeadless(ephemeralPort, ctxCancel)
+		slog.Info("headless daemon stopping")
+	} else {
+		slog.Info("muninndb-lite started (MCP stdio mode)", "mcp_addr", mcpAddr)
+		// Set the proxy URL to point at our ephemeral MCP server and run the
+		// stdio proxy on the main goroutine. When stdin closes (EOF), the proxy
+		// returns and we trigger graceful shutdown.
+		mcpProxyURL = fmt.Sprintf("http://127.0.0.1:%d/mcp", ephemeralPort)
+		runMCPStdioWith(os.Stdin, os.Stdout)
+		slog.Info("stdin closed, shutting down")
+	}
 	ctxCancel()
 
 	shutdownDone := make(chan struct{})
