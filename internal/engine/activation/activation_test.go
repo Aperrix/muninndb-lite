@@ -323,27 +323,27 @@ func TestActivationLogRingBuffer(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: Engram with very low relevance (0.01) comes back Dormant == true
+// Test 4: Dormant flag respects scoring mode
 // ---------------------------------------------------------------------------
 
-func TestDormantFlagSetWhenRelevanceLow(t *testing.T) {
+func TestDormantFlag_ACTRMode_AlwaysFalse(t *testing.T) {
 	store := newStubStore()
-	dormant := &storage.Engram{
+	eng := &storage.Engram{
 		Concept:    "dormant engram",
 		Content:    "barely alive",
 		Confidence: 1.0,
 		Stability:  30.0,
-		// Relevance 0.01 is well below minFloor*1.1 = 0.05*1.1 = 0.055
-		Relevance: 0.01,
+		Relevance:  0.01, // well below minFloor*1.1 = 0.055
 	}
-	store.writeEngram(dormant)
+	store.writeEngram(eng)
 
-	fts := &stubFTS{results: []activation.ScoredID{{ID: dormant.ID, Score: 0.8}}}
-	hnsw := &stubHNSW{results: []activation.ScoredID{{ID: dormant.ID, Score: 0.8}}}
+	fts := &stubFTS{results: []activation.ScoredID{{ID: eng.ID, Score: 0.8}}}
+	hnsw := &stubHNSW{results: []activation.ScoredID{{ID: eng.ID, Score: 0.8}}}
 
-	eng := newTestEngine(store, fts, hnsw)
+	e := newTestEngine(store, fts, hnsw)
 
-	result, err := eng.Run(context.Background(), &activation.ActivateRequest{
+	// Default mode is ACT-R — Dormant should be false regardless of Relevance.
+	result, err := e.Run(context.Background(), &activation.ActivateRequest{
 		Context:    []string{"barely alive"},
 		Threshold:  0.0,
 		MaxResults: 5,
@@ -351,21 +351,58 @@ func TestDormantFlagSetWhenRelevanceLow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(result.Activations) == 0 {
-		t.Fatal("expected dormant engram to appear in results")
+	for _, a := range result.Activations {
+		if a.Engram.ID == eng.ID && a.Dormant {
+			t.Error("ACT-R mode: Dormant should be false (dormancy is implicit via scoring)")
+		}
 	}
+}
 
+func TestDormantFlag_LegacyMode_SetWhenRelevanceLow(t *testing.T) {
+	store := newStubStore()
+	eng := &storage.Engram{
+		Concept:    "dormant engram",
+		Content:    "barely alive",
+		Confidence: 1.0,
+		Stability:  30.0,
+		Relevance:  0.01,
+	}
+	store.writeEngram(eng)
+
+	fts := &stubFTS{results: []activation.ScoredID{{ID: eng.ID, Score: 0.8}}}
+	hnsw := &stubHNSW{results: []activation.ScoredID{{ID: eng.ID, Score: 0.8}}}
+
+	e := newTestEngine(store, fts, hnsw)
+
+	// Legacy weighted-sum mode (DisableACTR) — Dormant should reflect Relevance.
+	result, err := e.Run(context.Background(), &activation.ActivateRequest{
+		Context:    []string{"barely alive"},
+		Threshold:  0.0,
+		MaxResults: 5,
+		Weights: &activation.Weights{
+			DisableACTR:        true,
+			SemanticSimilarity: 0.35,
+			FullTextRelevance:  0.25,
+			DecayFactor:        0.20,
+			HebbianBoost:       0.10,
+			AccessFrequency:    0.05,
+			Recency:            0.05,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
 	found := false
 	for _, a := range result.Activations {
-		if a.Engram.ID == dormant.ID {
+		if a.Engram.ID == eng.ID {
 			found = true
 			if !a.Dormant {
-				t.Errorf("engram with Relevance=0.01: Dormant=false, want true")
+				t.Error("legacy mode: engram with Relevance=0.01 should be Dormant=true")
 			}
 		}
 	}
 	if !found {
-		t.Fatal("dormant engram not found in activations")
+		t.Fatal("engram not found in results")
 	}
 }
 
@@ -1198,5 +1235,313 @@ func TestPhase4_75_ArchiveRestoreRunsDuringActivation(t *testing.T) {
 		t.Error("expected result.RestoredEdges to be non-empty after Phase 4.75 restore, got none")
 	} else {
 		t.Logf("Phase 4.75 populated %d RestoredEdges in ActivateResult", len(result.RestoredEdges))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: UseRRFFusion produces different scores from ACT-R default
+// ---------------------------------------------------------------------------
+//
+// This integration test verifies that the RRF scoring path is actually reached
+// when UseRRFFusion=true is set on the Weights struct (which is how
+// engine.go wires ScoringFusion="rrf" from plasticity config). The test runs
+// the same data through both ACT-R (default) and RRF paths and asserts the
+// scores differ — proving the RRF code path was taken.
+func TestUseRRFFusion_ProducesDifferentScoresFromACTR(t *testing.T) {
+	store := newStubStore()
+
+	eng1 := &storage.Engram{
+		Concept:    "rrf integration test",
+		Content:    "test engram for rrf vs actr comparison",
+		Confidence: 0.8,
+		Stability:  30.0,
+		Relevance:  0.5,
+	}
+	store.writeEngram(eng1)
+
+	var ftsResults []activation.ScoredID
+	for id := range store.metas {
+		ftsResults = append(ftsResults, activation.ScoredID{ID: id, Score: 0.6})
+	}
+
+	// Run with ACT-R (default path)
+	ftsACTR := &stubFTS{results: ftsResults}
+	engACTR := newTestEngine(store, ftsACTR, nil)
+	resultACTR, err := engACTR.Run(context.Background(), &activation.ActivateRequest{
+		Context:    []string{"test engram"},
+		Threshold:  0.0,
+		MaxResults: 10,
+		Weights: &activation.Weights{
+			SemanticSimilarity: 0.6,
+			FullTextRelevance:  0.4,
+			UseACTR:            true,
+			ACTRDecay:          0.5,
+			ACTRHebScale:       4.0,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run ACT-R: %v", err)
+	}
+
+	// Run with RRF fusion (the path wired by ScoringFusion="rrf" in plasticity).
+	// RRF scores are rank-based and small (e.g. 1/(60+1) ~ 0.016) so we use a
+	// low threshold. The engine floor-clamps Threshold<=0 to 0.05.
+	ftsRRF := &stubFTS{results: ftsResults}
+	engRRF := newTestEngine(store, ftsRRF, nil)
+	resultRRF, err := engRRF.Run(context.Background(), &activation.ActivateRequest{
+		Context:    []string{"test engram"},
+		Threshold:  0.001,
+		MaxResults: 10,
+		Weights: &activation.Weights{
+			SemanticSimilarity: 0.6,
+			FullTextRelevance:  0.4,
+			UseRRFFusion:       true,
+			DisableACTR:        true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run RRF: %v", err)
+	}
+
+	// Both paths should return results.
+	if len(resultACTR.Activations) == 0 {
+		t.Fatal("ACT-R path returned no results")
+	}
+	if len(resultRRF.Activations) == 0 {
+		t.Fatal("RRF path returned no results")
+	}
+
+	// Scores must be positive in both paths.
+	actrScore := resultACTR.Activations[0].Score
+	rrfScore := resultRRF.Activations[0].Score
+	if actrScore <= 0 {
+		t.Errorf("ACT-R score should be positive, got %v", actrScore)
+	}
+	if rrfScore <= 0 {
+		t.Errorf("RRF score should be positive, got %v", rrfScore)
+	}
+
+	// The two scoring formulas are fundamentally different (ACT-R computes
+	// base-level activation via power-law decay; RRF uses rank-based fusion).
+	// With identical inputs, their scores must differ.
+	if actrScore == rrfScore {
+		t.Errorf("ACT-R and RRF scores should differ: actr=%v rrf=%v", actrScore, rrfScore)
+	}
+	t.Logf("ACT-R score=%v, RRF score=%v (different as expected)", actrScore, rrfScore)
+}
+
+// ---------------------------------------------------------------------------
+// Test: RRF results are returned even with the default threshold (0.05).
+// This is a regression test for the ship-blocker where RRF scores (~0.04 max
+// for 2 signals) were all below the default 0.05 threshold, causing zero results.
+// The fix auto-lowers the threshold to 0.001 when UseRRFFusion is detected.
+// ---------------------------------------------------------------------------
+
+func TestRRF_ReturnsResultsWithDefaultThreshold(t *testing.T) {
+	store := newStubStore()
+
+	eng1 := &storage.Engram{
+		Concept:    "rrf threshold regression",
+		Content:    "engram that must survive default threshold with RRF scoring",
+		Confidence: 1.0,
+		Stability:  30.0,
+		Relevance:  0.8,
+	}
+	store.writeEngram(eng1)
+
+	ftsResults := []activation.ScoredID{{ID: eng1.ID, Score: 0.8}}
+	fts := &stubFTS{results: ftsResults}
+	hnsw := &stubHNSW{results: []activation.ScoredID{{ID: eng1.ID, Score: 0.7}}}
+
+	eng := newTestEngine(store, fts, hnsw)
+
+	// Threshold=0 triggers the default path (0.05) which used to filter all
+	// RRF results. After the fix, Run() detects UseRRFFusion and lowers the
+	// threshold to 0.001 automatically.
+	result, err := eng.Run(context.Background(), &activation.ActivateRequest{
+		Context:    []string{"rrf threshold"},
+		Threshold:  0, // triggers default 0.05
+		MaxResults: 10,
+		Weights: &activation.Weights{
+			UseRRFFusion: true,
+			DisableACTR:  true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Activations) == 0 {
+		t.Fatal("RRF with default threshold returned 0 results -- threshold auto-lowering is broken")
+	}
+	t.Logf("RRF returned %d results with auto-lowered threshold (score=%v)",
+		len(result.Activations), result.Activations[0].Score)
+}
+
+// ---------------------------------------------------------------------------
+// Test: When both UseRRFFusion and UseCGDN are enabled, RRF takes precedence
+// and CGDN is silently disabled. The guard in phase6Score logs a warning and
+// clears UseCGDN so the RRF path executes.
+// ---------------------------------------------------------------------------
+
+func TestRRF_CGDNConflict_RRFTakesPrecedence(t *testing.T) {
+	store := newStubStore()
+
+	eng1 := &storage.Engram{
+		Concept:    "conflict test",
+		Content:    "engram for RRF vs CGDN conflict test",
+		Confidence: 1.0,
+		Stability:  30.0,
+		Relevance:  0.8,
+	}
+	store.writeEngram(eng1)
+
+	ftsResults := []activation.ScoredID{{ID: eng1.ID, Score: 0.7}}
+	fts := &stubFTS{results: ftsResults}
+
+	eng := newTestEngine(store, fts, nil)
+
+	// Both RRF and CGDN enabled -- RRF should win.
+	result, err := eng.Run(context.Background(), &activation.ActivateRequest{
+		Context:    []string{"conflict test"},
+		Threshold:  0.0,
+		MaxResults: 10,
+		Weights: &activation.Weights{
+			UseRRFFusion:       true,
+			UseCGDN:            true,
+			SemanticSimilarity: 0.5,
+			FullTextRelevance:  0.5,
+			DisableACTR:        true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run with RRF+CGDN: %v", err)
+	}
+
+	// Should return results (RRF path executed, not CGDN).
+	if len(result.Activations) == 0 {
+		t.Fatal("RRF+CGDN conflict: expected results from RRF path")
+	}
+
+	// Verify the scores are RRF-scale (small, rank-based) not CGDN-scale.
+	// RRF scores for a single signal are in [0, ~0.016]; with confidence and
+	// boost multiplier, still well under 0.1.
+	score := result.Activations[0].Score
+	if score > 0.5 {
+		t.Errorf("score %v looks like CGDN (expected small RRF-scale score)", score)
+	}
+	if score <= 0 {
+		t.Errorf("score must be positive, got %v", score)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Archived engram filtering — regression tests for the StateArchived leak
+// ---------------------------------------------------------------------------
+
+// TestArchivedEngram_ExcludedFromRecall verifies that engrams with
+// StateArchived are not returned by activation/recall. The dream engine
+// archives consolidated engrams; they must not surface in normal recall
+// even though they are still present in the HNSW index.
+func TestArchivedEngram_ExcludedFromRecall(t *testing.T) {
+	store := newStubStore()
+
+	active := &storage.Engram{
+		Concept:    "active engram",
+		Content:    "this is active",
+		Confidence: 1.0,
+		Stability:  30.0,
+		State:      storage.StateActive,
+	}
+	archived := &storage.Engram{
+		Concept:    "archived engram",
+		Content:    "this was archived by dream engine",
+		Confidence: 1.0,
+		Stability:  30.0,
+		State:      storage.StateArchived,
+	}
+	store.writeEngram(active)
+	store.writeEngram(archived)
+
+	// Both appear as HNSW candidates (HNSW has no delete — defense-in-depth filter needed).
+	fts := &stubFTS{results: []activation.ScoredID{
+		{ID: active.ID, Score: 0.9},
+		{ID: archived.ID, Score: 0.9},
+	}}
+	hnsw := &stubHNSW{results: []activation.ScoredID{
+		{ID: active.ID, Score: 0.9},
+		{ID: archived.ID, Score: 0.9},
+	}}
+
+	eng := newTestEngine(store, fts, hnsw)
+	result, err := eng.Run(context.Background(), &activation.ActivateRequest{
+		Context:    []string{"engram"},
+		Threshold:  0.0,
+		MaxResults: 10,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for _, a := range result.Activations {
+		if a.Engram != nil && a.Engram.ID == archived.ID {
+			t.Errorf("archived engram appeared in recall results — StateArchived must be filtered")
+		}
+	}
+	var found bool
+	for _, a := range result.Activations {
+		if a.Engram != nil && a.Engram.ID == active.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("active engram missing from recall results")
+	}
+}
+
+// TestSoftDeletedEngram_ExcludedFromRecall verifies the existing soft-delete
+// filter still works after the archived-filter change (regression guard).
+func TestSoftDeletedEngram_ExcludedFromRecall(t *testing.T) {
+	store := newStubStore()
+
+	active := &storage.Engram{
+		Concept:    "active",
+		Content:    "active content",
+		Confidence: 1.0,
+		Stability:  30.0,
+		State:      storage.StateActive,
+	}
+	deleted := &storage.Engram{
+		Concept:    "deleted",
+		Content:    "soft deleted content",
+		Confidence: 1.0,
+		Stability:  30.0,
+		State:      storage.StateSoftDeleted,
+	}
+	store.writeEngram(active)
+	store.writeEngram(deleted)
+
+	fts := &stubFTS{results: []activation.ScoredID{
+		{ID: active.ID, Score: 0.9},
+		{ID: deleted.ID, Score: 0.9},
+	}}
+	hnsw := &stubHNSW{results: []activation.ScoredID{
+		{ID: active.ID, Score: 0.9},
+		{ID: deleted.ID, Score: 0.9},
+	}}
+
+	eng := newTestEngine(store, fts, hnsw)
+	result, err := eng.Run(context.Background(), &activation.ActivateRequest{
+		Context:    []string{"content"},
+		Threshold:  0.0,
+		MaxResults: 10,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for _, a := range result.Activations {
+		if a.Engram != nil && a.Engram.ID == deleted.ID {
+			t.Errorf("soft-deleted engram appeared in recall results")
+		}
 	}
 }
