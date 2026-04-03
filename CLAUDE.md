@@ -35,13 +35,18 @@ The Go module path is `github.com/scrypster/muninndb` (upstream). **Do NOT chang
 
 ### Entry point
 
-`muninndb-lite mcp` (or just `muninndb-lite`) starts:
-1. The full engine inline (Pebble, WAL, FTS, HNSW, auth, cognitive workers, plugins)
-2. An MCP HTTP server on an **ephemeral port** (127.0.0.1:0)
-3. A stdio proxy loop bridging stdin/stdout to that internal HTTP server
-4. Graceful shutdown on stdin EOF or SIGINT/SIGTERM
+`muninndb-lite mcp` (or just `muninndb-lite`) uses a **daemon + proxy** architecture matching upstream's `muninn start` + `muninn mcp` pattern:
 
-There is **no daemon mode**, no `start`/`stop` commands, no persistent server. The process lives and dies with the MCP client.
+1. Probes `127.0.0.1:8750` (the well-known MCP port, configurable via `MUNINN_MCP_PORT`)
+2. If no daemon responds, forks `muninndb-lite --daemon` — a headless engine process:
+   - Opens Pebble, WAL, FTS, HNSW, auth, cognitive workers, plugins
+   - Starts an internal MCP HTTP server on an ephemeral port
+   - Exposes it on `:8750` via a reverse proxy with idle tracking
+   - Auto-terminates after 5 minutes of inactivity (no orphan processes)
+3. Runs `runMCPStdio()` (upstream code, unmodified) as a stdio proxy to `:8750`
+4. Subsequent sessions detect the daemon and proxy directly — multiple sessions share the same engine
+
+The daemon is ephemeral — it lives only while MCP clients are active and shuts down on idle timeout or SIGTERM.
 
 ## Recall pipeline
 
@@ -155,6 +160,7 @@ git merge upstream/develop
 | `cmd/muninn/main.go` | Our entry point — modify freely |
 | `cmd/muninn/server.go` | Our wiring — modify freely (contains `runMCPStandalone()`) |
 | `cmd/muninn/help.go` | Our help text — modify freely |
+| `cmd/muninn/daemon.go` | Our daemon fork/proxy logic — modify freely |
 | `cmd/muninn/*.go` (other) | Dead code from upstream — do NOT delete (merge compatibility), do NOT modify |
 | `internal/` | Do NOT modify — upstream code, must merge cleanly |
 | `.github/workflows/` | Our CI/release — modify freely |
@@ -164,8 +170,9 @@ git merge upstream/develop
 
 | File | Role |
 |---|---|
-| `cmd/muninn/server.go` | `runMCPStandalone()` — engine init + MCP server + stdio proxy |
-| `cmd/muninn/main.go` | Entry point — dispatches `mcp`, `version`, `help` |
+| `cmd/muninn/server.go` | `runMCPStandalone()` — engine init + MCP server (headless or stdio) |
+| `cmd/muninn/main.go` | Entry point — probe daemon, fork if needed, proxy via `runMCPStdio()` |
+| `cmd/muninn/daemon.go` | Daemon fork, health check, reverse proxy with idle timeout |
 | `cmd/muninn/mcp_stdio.go` | `runMCPStdioWith()` — stdio-to-HTTP proxy loop (upstream, unmodified) |
 | `cmd/muninn/help.go` | CLI help text |
 | `internal/plugin/embed/local_stub.go` | Stub for removed ONNX embedder |

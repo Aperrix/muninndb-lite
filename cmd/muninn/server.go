@@ -532,9 +532,10 @@ func parseListenHost(args []string, envVal string) string {
 	return host
 }
 
-// runMCPStandalone starts the full engine inline and runs the MCP server +
-// stdio proxy in a single process. This is the only entry point for
-// muninndb-lite — no daemon, no REST/gRPC/MBP/UI.
+// runMCPStandalone starts the full engine inline and runs the MCP server.
+// In normal mode: stdio proxy bridges stdin/stdout to the internal HTTP server.
+// In headless mode (--daemon): exposes on :8750 via reverse proxy + idle timeout.
+// No REST/gRPC/MBP/UI — MCP only.
 func runMCPStandalone() {
 	loadEnvFile()
 

@@ -103,8 +103,9 @@ func printHelp() {
 	fmt.Println()
 	fmt.Println(bold("muninndb-lite") + " — MCP-only cognitive memory database")
 	fmt.Println()
-	fmt.Println("  A minimal fork of MuninnDB that runs as a single-process MCP stdio server.")
-	fmt.Println("  No daemon, no REST API, no gRPC, no web UI — just the engine + MCP over stdio.")
+	fmt.Println("  A minimal fork of MuninnDB. Engine runs as an ephemeral daemon on :8750,")
+	fmt.Println("  MCP clients connect via stdio proxy. Multiple sessions share one engine.")
+	fmt.Println("  No REST API, no gRPC, no web UI — just the engine + MCP over stdio.")
 	fmt.Println()
 
 	fmt.Println(bold("USAGE"))
