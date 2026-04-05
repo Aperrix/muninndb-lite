@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -19,9 +20,21 @@ import (
 // exposes the MCP server on the well-known port with idle timeout.
 var headlessMode bool
 
-// mcpPort returns the MCP port to use, checking MUNINN_MCP_PORT env
-// var first, then falling back to defaultMCPPort (8750).
-// This mirrors upstream's --mcp-addr flag behavior.
+const (
+	// defaultIdleTimeout is the grace period after the last keepalive before
+	// the daemon shuts down. Override with MUNINN_IDLE_TIMEOUT env var.
+	defaultIdleTimeout = 5 * time.Minute
+
+	// keepaliveInterval is how often each proxy pings the daemon.
+	keepaliveInterval = 2 * time.Minute
+
+	// pidFileName is the PID file for the lite daemon.
+	// Separate from upstream's "muninn.pid" to avoid conflict.
+	pidFileName = "muninn-lite.pid"
+)
+
+// mcpPort returns the well-known MCP port, checking MUNINN_MCP_PORT env
+// var first. Mirrors upstream's --mcp-addr convention.
 func mcpPort() string {
 	if p := os.Getenv("MUNINN_MCP_PORT"); p != "" {
 		return p
@@ -29,16 +42,12 @@ func mcpPort() string {
 	return defaultMCPPort
 }
 
-// defaultIdleTimeout is how long the headless daemon waits without any
-// MCP request before shutting itself down. Override with MUNINN_IDLE_TIMEOUT.
-const defaultIdleTimeout = 30 * time.Minute
-
-// getIdleTimeout returns the idle timeout, checking MUNINN_IDLE_TIMEOUT
-// env var first (accepts Go duration strings like "1h", "30m", "0" to disable).
+// getIdleTimeout returns the daemon idle timeout.
+// MUNINN_IDLE_TIMEOUT accepts Go duration strings ("1h", "30m") or "0" to disable.
 func getIdleTimeout() time.Duration {
 	if s := os.Getenv("MUNINN_IDLE_TIMEOUT"); s != "" {
-		if s == "0" || s == "off" || s == "disable" {
-			return 0 // disabled
+		if s == "0" || s == "off" {
+			return 0
 		}
 		if d, err := time.ParseDuration(s); err == nil && d > 0 {
 			return d
@@ -47,22 +56,26 @@ func getIdleTimeout() time.Duration {
 	return defaultIdleTimeout
 }
 
-// isEngineReachable probes the MCP health endpoint on the given port.
-func isEngineReachable(port string) bool {
-	c := &http.Client{Timeout: 500 * time.Millisecond}
-	resp, err := c.Get("http://127.0.0.1:" + port + "/mcp")
+// isLiteDaemonRunning checks the lite-specific PID file and verifies the
+// process is alive. Cleans up stale PID files. Separate from upstream's
+// isDaemonRunning() (in upgrade.go) which checks "muninn.pid".
+func isLiteDaemonRunning() bool {
+	pidPath := filepath.Join(defaultDataDir(), pidFileName)
+	pid, err := readPID(pidPath)
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
-	return resp.StatusCode < 500
+	if isProcessRunning(pid) {
+		return true
+	}
+	os.Remove(pidPath)
+	return false
 }
 
-// forkDaemon launches muninndb-lite --daemon as a detached process.
-// The daemon starts the engine on the well-known MCP port and serves
-// until idle timeout or SIGTERM.
+// forkDaemon launches muninndb-lite --daemon as a detached background process.
+// Uses upstream helpers: daemonSysProcAttr(), daemonExtraSetup(), logFilePath(),
+// writePID().
 func forkDaemon() error {
-	// Build args: --daemon + forward all original args except "mcp" subcommand.
 	args := []string{"--daemon"}
 	for _, a := range os.Args[1:] {
 		if a == "mcp" {
@@ -77,47 +90,58 @@ func forkDaemon() error {
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 
-	logPath := filepath.Join(defaultDataDir(), "daemon.log")
-	if lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
+	lf, err := os.OpenFile(logFilePath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err == nil {
 		cmd.Stderr = lf
-		// lf is intentionally NOT closed here — the child inherits the fd.
-		// The OS closes it when the child exits.
 	}
 
 	if err := cmd.Start(); err != nil {
+		if lf != nil {
+			lf.Close()
+		}
 		return fmt.Errorf("fork daemon: %w", err)
 	}
 
-	// Write PID file so the daemon can be stopped if needed.
-	pidPath := filepath.Join(defaultDataDir(), "muninn-lite.pid")
+	// Close parent's copy of log file — child has inherited the fd.
+	if lf != nil {
+		lf.Close()
+	}
+
+	pidPath := filepath.Join(defaultDataDir(), pidFileName)
 	if err := writePID(pidPath, cmd.Process.Pid); err != nil {
 		slog.Warn("failed to write daemon PID file", "err", err)
 	}
 
-	// Detach — don't wait for child.
 	cmd.Process.Release()
 	return nil
 }
 
-// waitForHealth polls the MCP endpoint until it responds or timeout.
+// waitForHealth polls the MCP health endpoint until it responds or timeout.
+// Pattern matches upstream's runStart() health loop.
 func waitForHealth(port string, timeout time.Duration) error {
+	healthURL := "http://127.0.0.1:" + port + "/mcp/health"
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if isEngineReachable(port) {
+		time.Sleep(200 * time.Millisecond)
+		resp, err := http.Get(healthURL)
+		if err != nil {
+			continue
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == 200 {
 			return nil
 		}
-		time.Sleep(200 * time.Millisecond)
 	}
 	return fmt.Errorf("daemon did not become healthy within %s", timeout)
 }
 
-// startKeepalive sends periodic health pings to the daemon to prevent
-// idle timeout while this proxy session is alive. Uses /mcp/health
-// (lightweight 200 OK) instead of /mcp (which opens an SSE stream).
+// startKeepalive pings /mcp/health every 2 minutes to keep the daemon alive.
+// Runs until the process exits (session closed).
 func startKeepalive(port string) {
 	c := &http.Client{Timeout: 2 * time.Second}
 	healthURL := "http://127.0.0.1:" + port + "/mcp/health"
-	ticker := time.NewTicker(2 * time.Minute)
+	ticker := time.NewTicker(keepaliveInterval)
 	defer ticker.Stop()
 	for range ticker.C {
 		resp, err := c.Get(healthURL)
@@ -128,36 +152,31 @@ func startKeepalive(port string) {
 	}
 }
 
-// runHeadless exposes the internal MCP server on the well-known port
-// via a reverse proxy that tracks request timestamps for idle detection.
-// It blocks until the idle timeout is reached, then calls cancel to
-// trigger graceful shutdown of the engine.
+// runHeadless exposes the internal MCP server on the well-known port via
+// a reverse proxy. Tracks request timestamps for idle detection. Blocks
+// until idle timeout or SIGTERM.
 func runHeadless(internalPort int, cancel func()) {
 	publicAddr := "127.0.0.1:" + mcpPort()
 	timeout := getIdleTimeout()
 
-	// Bind the well-known port first — fail fast if another daemon is running.
 	ln, err := net.Listen("tcp", publicAddr)
 	if err != nil {
-		slog.Error("headless: failed to bind well-known port (another daemon running?)",
+		slog.Error("headless: port unavailable (another daemon running?)",
 			"addr", publicAddr, "err", err)
 		os.Exit(1)
 	}
 
-	// Reverse proxy to the internal MCP server.
 	target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", internalPort))
 	proxy := httputil.NewSingleHostReverseProxy(target)
 
-	// Track last request timestamp for idle detection.
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().Unix())
 
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		lastActivity.Store(time.Now().Unix())
 		proxy.ServeHTTP(w, r)
-	})
+	})}
 
-	srv := &http.Server{Handler: handler}
 	go func() {
 		if timeout > 0 {
 			slog.Info("headless daemon listening", "addr", publicAddr, "idle_timeout", timeout)
@@ -169,19 +188,16 @@ func runHeadless(internalPort int, cancel func()) {
 		}
 	}()
 
-	// Idle timeout disabled — block until SIGTERM.
 	if timeout <= 0 {
-		select {}
+		select {} // disabled — block until SIGTERM
 	}
 
-	// Idle watchdog — shut down when no MCP requests for the configured timeout.
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
 		idle := time.Since(time.Unix(lastActivity.Load(), 0))
 		if idle > timeout {
-			slog.Info("headless daemon: idle timeout, shutting down",
-				"idle", idle.Round(time.Second))
+			slog.Info("headless daemon: idle timeout", "idle", idle.Round(time.Second))
 			cancel()
 			return
 		}

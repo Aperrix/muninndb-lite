@@ -28,7 +28,7 @@ func main() {
 
 	sub := parseSubcommand(os.Args[1:])
 
-	// If the "subcommand" is actually a flag (e.g. --data), treat as no subcommand.
+	// If the "subcommand" is actually a flag (e.g. --data), treat as default.
 	if len(sub) > 0 && sub[0] == '-' {
 		startOrProxy()
 		return
@@ -57,15 +57,14 @@ func main() {
 	}
 }
 
-// startOrProxy connects to an existing daemon or forks one, then proxies.
+// startOrProxy detects an existing daemon or forks one, then proxies.
+// Uses PID-based detection (upstream's readPID + isProcessRunning)
+// instead of HTTP probing — faster, no network, handles stale PIDs.
 func startOrProxy() {
 	port := mcpPort()
-
-	// Set proxy URL to the daemon port (overrides default from mcp_stdio.go).
 	mcpProxyURL = "http://127.0.0.1:" + port + "/mcp"
 
-	if !isEngineReachable(port) {
-		// No daemon — fork one and wait for it to be ready.
+	if !isLiteDaemonRunning() {
 		if err := forkDaemon(); err != nil {
 			slog.Error("failed to start daemon", "err", err)
 			os.Exit(1)
@@ -76,9 +75,6 @@ func startOrProxy() {
 		}
 	}
 
-	// Keep daemon alive while this session is open.
 	go startKeepalive(port)
-
-	// Proxy to the daemon (same as upstream "muninn mcp").
 	runMCPStdio()
 }
