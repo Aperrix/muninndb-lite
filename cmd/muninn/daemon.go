@@ -111,15 +111,16 @@ func waitForHealth(port string, timeout time.Duration) error {
 	return fmt.Errorf("daemon did not become healthy within %s", timeout)
 }
 
-// startKeepalive sends periodic pings to the daemon to prevent idle
-// timeout while this proxy session is alive. Runs until the process exits.
+// startKeepalive sends periodic health pings to the daemon to prevent
+// idle timeout while this proxy session is alive. Uses /mcp/health
+// (lightweight 200 OK) instead of /mcp (which opens an SSE stream).
 func startKeepalive(port string) {
 	c := &http.Client{Timeout: 2 * time.Second}
-	url := "http://127.0.0.1:" + port + "/mcp"
+	healthURL := "http://127.0.0.1:" + port + "/mcp/health"
 	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
-		resp, err := c.Get(url)
+		resp, err := c.Get(healthURL)
 		if err != nil {
 			continue
 		}
