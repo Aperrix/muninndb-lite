@@ -168,7 +168,7 @@ func (e *noPluginsEngine) RetryEnrich(_ context.Context, _ string, id string) (*
 // configurable CheckIdempotency responses for testing the op_id path.
 type idempotentEngine struct {
 	fakeEngine
-	receipt   *storage.IdempotencyReceipt // non-nil → return this on CheckIdempotency
+	receipt    *storage.IdempotencyReceipt // non-nil → return this on CheckIdempotency
 	writeCalls int
 }
 
@@ -1538,7 +1538,8 @@ func TestHandleRemember_NoOpID(t *testing.T) {
 // in handleRemember, both goroutines would see a nil receipt and each call
 // Write — producing two engrams for a single op_id.
 type slowIdempotentEngine struct {
-	mu        sync.Mutex
+	fakeEngine
+	mu         sync.Mutex
 	writeCalls int32 // accessed atomically
 
 	// storedReceipt is written after the first Write completes; subsequent
@@ -2474,6 +2475,55 @@ func (e *replayEnrichEngine) ReplayEnrichment(_ context.Context, _ string, _ []s
 	return &engine.ReplayEnrichmentResult{Processed: 5, Skipped: 2, StagesRun: []string{"entities", "relationships", "classification", "summary"}, DryRun: dryRun}, nil
 }
 
+type enrichmentCandidatesEngine struct {
+	fakeEngine
+	result *EnrichmentCandidatesResult
+	err    error
+}
+
+func (e *enrichmentCandidatesEngine) GetEnrichmentCandidates(_ context.Context, _ string, _ []string, _ int) (*EnrichmentCandidatesResult, error) {
+	if e.err != nil {
+		return nil, e.err
+	}
+	if e.result != nil {
+		return e.result, nil
+	}
+	return &EnrichmentCandidatesResult{
+		Items: []EnrichmentCandidate{{
+			ID:            "01HVTESTCANDIDATE0000000001",
+			Concept:       "candidate",
+			Content:       "candidate content",
+			MissingStages: []string{"summary"},
+			UpdatedAt:     "2026-03-29T12:00:00Z",
+			DigestFlags:   map[string]bool{"summary": false},
+		}},
+		StagesRequested: []string{"summary"},
+		Count:           1,
+	}, nil
+}
+
+type applyEnrichmentEngine struct {
+	fakeEngine
+	result *ApplyEnrichmentResult
+	err    error
+}
+
+func (e *applyEnrichmentEngine) ApplyEnrichment(_ context.Context, _ string, _ *ApplyEnrichmentRequest) (*ApplyEnrichmentResult, error) {
+	if e.err != nil {
+		return nil, e.err
+	}
+	if e.result != nil {
+		return e.result, nil
+	}
+	return &ApplyEnrichmentResult{
+		ID:            "01HVTESTAPPLY00000000000001",
+		AppliedStages: []string{"summary"},
+		UpdatedAt:     "2026-03-29T12:01:00Z",
+		DigestFlags:   map[string]bool{"summary": true},
+		Status:        "updated",
+	}, nil
+}
+
 func TestHandleReplayEnrichment_HappyPath(t *testing.T) {
 	srv := newTestServerWith(&replayEnrichEngine{})
 	body := `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"muninn_replay_enrichment","arguments":{"vault":"default"}}}`
@@ -2590,6 +2640,92 @@ func TestHandleReplayEnrichment_WithStages(t *testing.T) {
 	inner := extractInnerJSON(t, resp)
 	if inner["processed"] == nil {
 		t.Error("response missing 'processed' field")
+	}
+}
+
+func TestHandleGetEnrichmentCandidates_HappyPath(t *testing.T) {
+	srv := newTestServerWith(&enrichmentCandidatesEngine{})
+	body := `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"muninn_get_enrichment_candidates","arguments":{"vault":"default","stages":["summary"]}}}`
+	w := postRPC(t, srv, body)
+	resp := decodeResp(t, w.Body.String())
+	inner := extractInnerJSON(t, resp)
+
+	items, ok := inner["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("expected one candidate item, got %v", inner["items"])
+	}
+	if inner["count"] == nil {
+		t.Error("response missing 'count' field")
+	}
+	if inner["stages_requested"] == nil {
+		t.Error("response missing 'stages_requested' field")
+	}
+}
+
+func TestHandleGetEnrichmentCandidates_InvalidStages(t *testing.T) {
+	srv := newTestServerWith(&enrichmentCandidatesEngine{})
+	body := `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"muninn_get_enrichment_candidates","arguments":{"vault":"default","stages":"summary"}}}`
+	w := postRPC(t, srv, body)
+	resp := decodeResp(t, w.Body.String())
+	if resp.Error == nil {
+		t.Fatal("expected invalid params error")
+	}
+	if resp.Error.Code != -32602 {
+		t.Fatalf("expected -32602, got %d", resp.Error.Code)
+	}
+}
+
+func TestHandleApplyEnrichment_HappyPath(t *testing.T) {
+	srv := newTestServerWith(&applyEnrichmentEngine{})
+	body := `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"muninn_apply_enrichment","arguments":{"vault":"default","id":"01HVTESTAPPLY00000000000001","expected_updated_at":"2026-03-29T12:00:00Z","summary":"new summary","stages_completed":["summary"],"entities":[{"name":"PostgreSQL","type":"database","confidence":0.9}],"relationships":[{"from_entity":"PostgreSQL","to_entity":"System of Record","rel_type":"is_a","weight":0.8}]}}}`
+	w := postRPC(t, srv, body)
+	resp := decodeResp(t, w.Body.String())
+	inner := extractInnerJSON(t, resp)
+
+	if got, _ := inner["status"].(string); got != "updated" {
+		t.Fatalf("status: got %q, want %q", got, "updated")
+	}
+	if inner["applied_stages"] == nil {
+		t.Error("response missing 'applied_stages' field")
+	}
+}
+
+func TestHandleApplyEnrichment_MissingExpectedUpdatedAt(t *testing.T) {
+	srv := newTestServerWith(&applyEnrichmentEngine{})
+	body := `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"muninn_apply_enrichment","arguments":{"vault":"default","id":"01HVTESTAPPLY00000000000001"}}}`
+	w := postRPC(t, srv, body)
+	resp := decodeResp(t, w.Body.String())
+	if resp.Error == nil {
+		t.Fatal("expected invalid params error")
+	}
+	if resp.Error.Code != -32602 {
+		t.Fatalf("expected -32602, got %d", resp.Error.Code)
+	}
+}
+
+func TestHandleApplyEnrichment_InvalidRelationshipPayload(t *testing.T) {
+	srv := newTestServerWith(&applyEnrichmentEngine{})
+	body := `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"muninn_apply_enrichment","arguments":{"vault":"default","id":"01HVTESTAPPLY00000000000001","expected_updated_at":"2026-03-29T12:00:00Z","relationships":[{"from_entity":"PostgreSQL","rel_type":"is_a"}]}}}`
+	w := postRPC(t, srv, body)
+	resp := decodeResp(t, w.Body.String())
+	if resp.Error == nil {
+		t.Fatal("expected invalid params error")
+	}
+	if resp.Error.Code != -32602 {
+		t.Fatalf("expected -32602, got %d", resp.Error.Code)
+	}
+}
+
+func TestHandleApplyEnrichment_Conflict(t *testing.T) {
+	srv := newTestServerWith(&applyEnrichmentEngine{err: fmt.Errorf("%w: stale write", engine.ErrEnrichmentConflict)})
+	body := `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"muninn_apply_enrichment","arguments":{"vault":"default","id":"01HVTESTAPPLY00000000000001","expected_updated_at":"2026-03-29T12:00:00Z","summary":"new summary"}}}`
+	w := postRPC(t, srv, body)
+	resp := decodeResp(t, w.Body.String())
+	if resp.Error == nil {
+		t.Fatal("expected conflict error")
+	}
+	if resp.Error.Code != -32009 {
+		t.Fatalf("expected -32009, got %d", resp.Error.Code)
 	}
 }
 

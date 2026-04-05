@@ -19,10 +19,10 @@ type mockEnrichPlugin struct {
 	calls    int
 }
 
-func (m *mockEnrichPlugin) Name() string  { return "mock-enrich" }
-func (m *mockEnrichPlugin) Tier() plugin.PluginTier { return plugin.TierEnrich }
+func (m *mockEnrichPlugin) Name() string                                        { return "mock-enrich" }
+func (m *mockEnrichPlugin) Tier() plugin.PluginTier                             { return plugin.TierEnrich }
 func (m *mockEnrichPlugin) Init(_ context.Context, _ plugin.PluginConfig) error { return nil }
-func (m *mockEnrichPlugin) Close() error  { return nil }
+func (m *mockEnrichPlugin) Close() error                                        { return nil }
 
 func (m *mockEnrichPlugin) Enrich(ctx context.Context, eng *storage.Engram) (*plugin.EnrichmentResult, error) {
 	m.calls++
@@ -230,6 +230,71 @@ func TestReplayEnrichment_StagesRunReflectsRequest(t *testing.T) {
 	}
 }
 
+func TestGetEnrichmentCandidates_ReturnsOnlyMissingStages(t *testing.T) {
+	eng, cleanup := testEnv(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	const vault = "default"
+
+	needsResp, err := eng.Write(ctx, &mbp.WriteRequest{
+		Vault:   vault,
+		Content: "needs summary",
+		Concept: "candidate needs summary",
+	})
+	if err != nil {
+		t.Fatalf("Write(needs): %v", err)
+	}
+	needsID, err := storage.ParseULID(needsResp.ID)
+	if err != nil {
+		t.Fatalf("ParseULID(needs): %v", err)
+	}
+	if err := eng.store.SetDigestFlag(ctx, needsID, plugin.DigestEntities); err != nil {
+		t.Fatalf("SetDigestFlag(needs entities): %v", err)
+	}
+
+	doneResp, err := eng.Write(ctx, &mbp.WriteRequest{
+		Vault:   vault,
+		Content: "already done",
+		Concept: "candidate already enriched",
+	})
+	if err != nil {
+		t.Fatalf("Write(done): %v", err)
+	}
+	doneID, err := storage.ParseULID(doneResp.ID)
+	if err != nil {
+		t.Fatalf("ParseULID(done): %v", err)
+	}
+	for _, flag := range []uint8{
+		plugin.DigestEntities,
+		plugin.DigestRelationships,
+		plugin.DigestClassified,
+		plugin.DigestSummarized,
+	} {
+		if err := eng.store.SetDigestFlag(ctx, doneID, flag); err != nil {
+			t.Fatalf("SetDigestFlag(done 0x%02x): %v", flag, err)
+		}
+	}
+
+	candidates, stages, err := eng.GetEnrichmentCandidates(ctx, vault, nil, 10)
+	if err != nil {
+		t.Fatalf("GetEnrichmentCandidates: %v", err)
+	}
+	if len(stages) != 4 {
+		t.Fatalf("stage count: got %d, want 4", len(stages))
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidate count: got %d, want 1", len(candidates))
+	}
+	if candidates[0].ID != needsID {
+		t.Fatalf("candidate id: got %s, want %s", candidates[0].ID, needsID)
+	}
+	wantMissing := []string{"relationships", "classification", "summary"}
+	if fmt.Sprint(candidates[0].MissingStages) != fmt.Sprint(wantMissing) {
+		t.Fatalf("missing stages: got %v, want %v", candidates[0].MissingStages, wantMissing)
+	}
+}
+
 // TestReplayEnrichment_WritesBackToEngram verifies that ReplayEnrichment actually
 // persists the Summary and KeyPoints returned by the enrich plugin into each engram.
 func TestReplayEnrichment_WritesBackToEngram(t *testing.T) {
@@ -346,6 +411,133 @@ func TestRetryEnrich_WritesBackToEngram(t *testing.T) {
 	}
 	if mock.calls == 0 {
 		t.Error("expected enrich plugin to be called at least once")
+	}
+}
+
+func TestApplyEnrichment_PersistsExplicitOutput(t *testing.T) {
+	eng, cleanup := testEnv(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	const vault = "default"
+	ws := eng.store.ResolveVaultPrefix(vault)
+
+	resp, err := eng.Write(ctx, &mbp.WriteRequest{
+		Vault:   vault,
+		Content: "postgres is the primary database",
+		Concept: "database note",
+	})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	id, err := storage.ParseULID(resp.ID)
+	if err != nil {
+		t.Fatalf("ParseULID: %v", err)
+	}
+	original, err := eng.GetEngram(ctx, vault, id)
+	if err != nil {
+		t.Fatalf("GetEngram(before): %v", err)
+	}
+
+	result, err := eng.ApplyEnrichment(ctx, vault, &EnrichmentApplyRequest{
+		ID:                resp.ID,
+		ExpectedUpdatedAt: original.UpdatedAt,
+		Summary:           "PostgreSQL is the primary system of record.",
+		MemoryType:        "reference",
+		TypeLabel:         "database_note",
+		Entities: []EnrichmentApplyEntity{
+			{Name: "PostgreSQL", Type: "database", Confidence: 0.95},
+			{Name: "System of Record", Type: "concept", Confidence: 0.7},
+		},
+		Relationships: []EnrichmentApplyRelationship{
+			{FromEntity: "PostgreSQL", ToEntity: "System of Record", RelType: "is_a", Weight: 0.8},
+		},
+		StagesCompleted: []string{"summary", "classification", "entities", "relationships"},
+		Source:          "test-agent",
+	})
+	if err != nil {
+		t.Fatalf("ApplyEnrichment: %v", err)
+	}
+	if len(result.AppliedStages) != 4 {
+		t.Fatalf("AppliedStages len: got %d, want 4", len(result.AppliedStages))
+	}
+
+	updated, err := eng.store.GetEngram(ctx, ws, id)
+	if err != nil {
+		t.Fatalf("GetEngram(after): %v", err)
+	}
+	if updated.Summary != "PostgreSQL is the primary system of record." {
+		t.Fatalf("Summary: got %q", updated.Summary)
+	}
+	if updated.TypeLabel != "database_note" {
+		t.Fatalf("TypeLabel: got %q, want %q", updated.TypeLabel, "database_note")
+	}
+	if updated.MemoryType.String() != "reference" {
+		t.Fatalf("MemoryType: got %q, want %q", updated.MemoryType.String(), "reference")
+	}
+
+	flags, err := eng.store.GetDigestFlags(ctx, id)
+	if err != nil {
+		t.Fatalf("GetDigestFlags: %v", err)
+	}
+	wantMask := plugin.DigestEntities | plugin.DigestRelationships | plugin.DigestClassified | plugin.DigestSummarized
+	if flags&wantMask != wantMask {
+		t.Fatalf("digest flags: got 0x%02x, want mask 0x%02x", flags, wantMask)
+	}
+
+	entityRecord, err := eng.store.GetEntityRecord(ctx, "PostgreSQL")
+	if err != nil {
+		t.Fatalf("GetEntityRecord: %v", err)
+	}
+	if entityRecord == nil || entityRecord.Source != "test-agent" {
+		t.Fatalf("entity record: got %+v", entityRecord)
+	}
+
+	var relationships []storage.RelationshipRecord
+	if err := eng.store.ScanEngramRelationships(ctx, ws, id, func(record storage.RelationshipRecord) error {
+		relationships = append(relationships, record)
+		return nil
+	}); err != nil {
+		t.Fatalf("ScanEngramRelationships: %v", err)
+	}
+	if len(relationships) != 1 {
+		t.Fatalf("relationship count: got %d, want 1", len(relationships))
+	}
+	if relationships[0].Source != "test-agent" {
+		t.Fatalf("relationship source: got %q, want %q", relationships[0].Source, "test-agent")
+	}
+}
+
+func TestApplyEnrichment_ConflictOnUpdatedAtMismatch(t *testing.T) {
+	eng, cleanup := testEnv(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	const vault = "default"
+
+	resp, err := eng.Write(ctx, &mbp.WriteRequest{
+		Vault:   vault,
+		Content: "conflict target",
+		Concept: "conflict target",
+	})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	id, err := storage.ParseULID(resp.ID)
+	if err != nil {
+		t.Fatalf("ParseULID: %v", err)
+	}
+	current, err := eng.GetEngram(ctx, vault, id)
+	if err != nil {
+		t.Fatalf("GetEngram: %v", err)
+	}
+	_, err = eng.ApplyEnrichment(ctx, vault, &EnrichmentApplyRequest{
+		ID:                resp.ID,
+		ExpectedUpdatedAt: current.UpdatedAt.Add(-time.Second),
+		Summary:           "stale summary",
+	})
+	if !errors.Is(err, ErrEnrichmentConflict) {
+		t.Fatalf("ApplyEnrichment error: got %v, want ErrEnrichmentConflict (current=%s)", err, current.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	}
 }
 

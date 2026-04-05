@@ -34,6 +34,8 @@ var allMCPTools = []string{
 	"muninn_state",
 	"muninn_list_deleted",
 	"muninn_retry_enrich",
+	"muninn_get_enrichment_candidates",
+	"muninn_apply_enrichment",
 	"muninn_guide",
 	"muninn_where_left_off",
 	"muninn_find_by_entity",
@@ -578,6 +580,60 @@ func TestSmoke_AllMCPTools(t *testing.T) {
 		}
 		if errVal, hasErr := result["error"]; hasErr {
 			t.Errorf("muninn_retry_enrich returned error field: %v", errVal)
+		}
+	})
+
+	t.Run("muninn_get_enrichment_candidates", func(t *testing.T) {
+		result := mcpTool(t, tok, "muninn_get_enrichment_candidates", map[string]any{
+			"vault": vault,
+			"limit": 50,
+		})
+		if _, ok := result["items"].([]any); !ok {
+			t.Errorf("expected items array in result, got: %v", result)
+		}
+	})
+
+	t.Run("muninn_apply_enrichment", func(t *testing.T) {
+		seed := mcpTool(t, tok, "muninn_remember", map[string]any{
+			"vault":   vault,
+			"concept": "apply enrichment target",
+			"content": "this memory will be enriched by the smoke suite",
+		})
+		applyID, _ := seed["id"].(string)
+		if applyID == "" {
+			t.Fatal("failed to create memory for muninn_apply_enrichment")
+		}
+
+		candidates := mcpTool(t, tok, "muninn_get_enrichment_candidates", map[string]any{
+			"vault": vault,
+			"limit": 200,
+		})
+		items, _ := candidates["items"].([]any)
+		var updatedAt string
+		for _, item := range items {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			id, _ := m["id"].(string)
+			if id == applyID {
+				updatedAt, _ = m["updated_at"].(string)
+				break
+			}
+		}
+		if updatedAt == "" {
+			t.Fatalf("did not find candidate metadata for %s", applyID)
+		}
+
+		result := mcpTool(t, tok, "muninn_apply_enrichment", map[string]any{
+			"vault":               vault,
+			"id":                  applyID,
+			"expected_updated_at": updatedAt,
+			"summary":             "smoke summary",
+			"stages_completed":    []string{"summary"},
+		})
+		if got, _ := result["id"].(string); got != applyID {
+			t.Errorf("result id: got %q, want %q", got, applyID)
 		}
 	})
 

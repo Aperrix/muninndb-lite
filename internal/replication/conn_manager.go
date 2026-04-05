@@ -1,6 +1,9 @@
 package replication
 
-import "sync"
+import (
+	"net"
+	"sync"
+)
 
 // FrameHandler is called when a frame of a registered type is received.
 type FrameHandler func(fromNodeID string, payload []byte) error
@@ -56,6 +59,22 @@ func (m *ConnManager) AddPeer(nodeID, addr string) {
 		_ = existing.Close()
 	}
 	m.peers[nodeID] = NewPeerConn(nodeID, addr)
+}
+
+// RegisterConn registers an already-established inbound connection as a peer
+// and returns the new PeerConn. Unlike AddPeer, the PeerConn wraps the live
+// conn so Send works immediately without a separate Connect call. If a peer
+// for nodeID already exists it is closed and replaced.
+func (m *ConnManager) RegisterConn(nodeID, addr string, conn net.Conn) *PeerConn {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if existing, ok := m.peers[nodeID]; ok {
+		_ = existing.Close()
+	}
+	p := NewPeerConnFromConn(nodeID, addr, conn)
+	m.peers[nodeID] = p
+	return p
 }
 
 // RemovePeer closes and removes the peer identified by nodeID.

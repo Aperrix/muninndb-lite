@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -1446,20 +1447,133 @@ func (s *MCPServer) handleProvenance(ctx context.Context, w http.ResponseWriter,
 	sendResult(w, id, textContent(mustJSON(&ProvenanceResult{ID: engramID, Entries: entries})))
 }
 
+func (s *MCPServer) handleGetEnrichmentCandidates(ctx context.Context, w http.ResponseWriter, id json.RawMessage, vault string, args map[string]any) {
+	if vault == "" {
+		sendError(w, id, -32602, "invalid params: 'vault' is required")
+		return
+	}
+	stages, errMsg := parseStageArgs(args)
+	if errMsg != "" {
+		sendError(w, id, -32602, errMsg)
+		return
+	}
+	limit := 50
+	if v, ok := args["limit"].(float64); ok {
+		if v < 0 {
+			v = 0
+		}
+		limit = int(v)
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	result, err := s.engine.GetEnrichmentCandidates(ctx, vault, stages, limit)
+	if err != nil {
+		sendError(w, id, -32000, "tool error: "+err.Error())
+		return
+	}
+	sendResult(w, id, textContent(mustJSON(result)))
+}
+
+func (s *MCPServer) handleApplyEnrichment(ctx context.Context, w http.ResponseWriter, id json.RawMessage, vault string, args map[string]any) {
+	if vault == "" {
+		sendError(w, id, -32602, "invalid params: 'vault' is required")
+		return
+	}
+	engramID, ok := args["id"].(string)
+	if !ok || engramID == "" {
+		sendError(w, id, -32602, "invalid params: 'id' is required")
+		return
+	}
+	expectedUpdatedAt, ok := args["expected_updated_at"].(string)
+	if !ok || expectedUpdatedAt == "" {
+		sendError(w, id, -32602, "invalid params: 'expected_updated_at' is required")
+		return
+	}
+	stages, errMsg := parseStageArgsFromKey(args, "stages_completed")
+	if errMsg != "" {
+		sendError(w, id, -32602, errMsg)
+		return
+	}
+
+	req := &ApplyEnrichmentRequest{
+		ID:                engramID,
+		ExpectedUpdatedAt: expectedUpdatedAt,
+		Summary:           stringArg(args, "summary"),
+		MemoryType:        stringArg(args, "memory_type"),
+		TypeLabel:         stringArg(args, "type_label"),
+		StagesCompleted:   stages,
+		Source:            stringArg(args, "source"),
+	}
+	if entitiesAny, ok := args["entities"].([]any); ok {
+		req.Entities = make([]ApplyEnrichmentEntity, 0, len(entitiesAny))
+		for i, raw := range entitiesAny {
+			m, ok := raw.(map[string]any)
+			if !ok {
+				sendError(w, id, -32602, fmt.Sprintf("invalid params: entities[%d] must be an object", i))
+				return
+			}
+			name, _ := m["name"].(string)
+			etype, _ := m["type"].(string)
+			if name == "" || etype == "" {
+				sendError(w, id, -32602, fmt.Sprintf("invalid params: entities[%d] requires non-empty 'name' and 'type'", i))
+				return
+			}
+			entity := ApplyEnrichmentEntity{Name: name, Type: etype}
+			if v, ok := m["confidence"].(float64); ok {
+				entity.Confidence = float32(v)
+			}
+			req.Entities = append(req.Entities, entity)
+		}
+	}
+	if relsAny, ok := args["relationships"].([]any); ok {
+		req.Relationships = make([]ApplyEnrichmentRelationship, 0, len(relsAny))
+		for i, raw := range relsAny {
+			m, ok := raw.(map[string]any)
+			if !ok {
+				sendError(w, id, -32602, fmt.Sprintf("invalid params: relationships[%d] must be an object", i))
+				return
+			}
+			fromEntity, _ := m["from_entity"].(string)
+			toEntity, _ := m["to_entity"].(string)
+			relType, _ := m["rel_type"].(string)
+			if fromEntity == "" || toEntity == "" || relType == "" {
+				sendError(w, id, -32602, fmt.Sprintf("invalid params: relationships[%d] requires non-empty 'from_entity', 'to_entity', and 'rel_type'", i))
+				return
+			}
+			rel := ApplyEnrichmentRelationship{FromEntity: fromEntity, ToEntity: toEntity, RelType: relType}
+			if v, ok := m["weight"].(float64); ok {
+				rel.Weight = float32(v)
+			}
+			req.Relationships = append(req.Relationships, rel)
+		}
+	}
+
+	result, err := s.engine.ApplyEnrichment(ctx, vault, req)
+	if err != nil {
+		if errors.Is(err, engine.ErrEnrichmentConflict) {
+			sendError(w, id, -32009, "tool conflict: "+err.Error())
+			return
+		}
+		sendError(w, id, -32000, "tool error: "+err.Error())
+		return
+	}
+	sendResult(w, id, textContent(mustJSON(result)))
+}
+
 func (s *MCPServer) handleReplayEnrichment(ctx context.Context, w http.ResponseWriter, id json.RawMessage, vault string, args map[string]any) {
 	if vault == "" {
 		sendError(w, id, -32602, "invalid params: 'vault' is required")
 		return
 	}
 
-	// Parse stages (optional array of strings).
-	var stages []string
-	if stagesAny, ok := args["stages"].([]any); ok {
-		for _, v := range stagesAny {
-			if s, ok := v.(string); ok && s != "" {
-				stages = append(stages, s)
-			}
-		}
+	stages, errMsg := parseStageArgs(args)
+	if errMsg != "" {
+		sendError(w, id, -32602, errMsg)
+		return
 	}
 
 	// Parse limit (optional, default 50, max 200).
@@ -1494,6 +1608,35 @@ func (s *MCPServer) handleReplayEnrichment(ctx context.Context, w http.ResponseW
 		"stages_run": result.StagesRun,
 		"dry_run":    result.DryRun,
 	})))
+}
+
+func parseStageArgs(args map[string]any) ([]string, string) {
+	return parseStageArgsFromKey(args, "stages")
+}
+
+func parseStageArgsFromKey(args map[string]any, key string) ([]string, string) {
+	rawStages, ok := args[key]
+	if !ok {
+		return nil, ""
+	}
+	stagesAny, ok := rawStages.([]any)
+	if !ok {
+		return nil, fmt.Sprintf("invalid params: '%s' must be an array of strings", key)
+	}
+	stages := make([]string, 0, len(stagesAny))
+	for i, v := range stagesAny {
+		s, ok := v.(string)
+		if !ok || s == "" {
+			return nil, fmt.Sprintf("invalid params: %s[%d] must be a non-empty string", key, i)
+		}
+		stages = append(stages, s)
+	}
+	return stages, ""
+}
+
+func stringArg(args map[string]any, key string) string {
+	v, _ := args[key].(string)
+	return v
 }
 
 func (s *MCPServer) handleFeedback(ctx context.Context, w http.ResponseWriter, id json.RawMessage, vault string, args map[string]any) {

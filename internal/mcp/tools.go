@@ -391,6 +391,75 @@ func allToolDefinitions() []ToolDefinition {
 			},
 		},
 		{
+			Name:        "muninn_get_enrichment_candidates",
+			Description: "Return active memories that are missing one or more enrichment stages so an external MCP agent can enrich them without using the server-side enrich plugin.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"vault": vaultProp,
+					"stages": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string", "enum": []string{"entities", "relationships", "classification", "summary"}},
+						"description": "Which enrichment stages to look for. Defaults to all four stages.",
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Maximum number of candidate memories to return in this call (default 50, max 200).",
+					},
+				},
+				"required": []string{},
+			},
+		},
+		{
+			Name:        "muninn_apply_enrichment",
+			Description: "Persist externally generated enrichment output for a single memory. Use this after an MCP agent reads candidates, generates summary/entities/relationships itself, and writes results back without relying on the server-side enrich plugin.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"vault":               vaultProp,
+					"id":                  map[string]any{"type": "string", "description": "ID of the memory to update."},
+					"expected_updated_at": map[string]any{"type": "string", "description": "RFC3339Nano timestamp from the candidate response. Prevents stale overwrites."},
+					"summary":             map[string]any{"type": "string", "description": "Optional generated summary."},
+					"memory_type":         map[string]any{"type": "string", "description": "Optional generated memory type."},
+					"type_label":          map[string]any{"type": "string", "description": "Optional generated free-form type label."},
+					"entities": map[string]any{
+						"type":        "array",
+						"description": "Optional extracted entities to persist.",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"name":       map[string]any{"type": "string"},
+								"type":       map[string]any{"type": "string"},
+								"confidence": map[string]any{"type": "number"},
+							},
+							"required": []string{"name", "type"},
+						},
+					},
+					"relationships": map[string]any{
+						"type":        "array",
+						"description": "Optional extracted entity relationships to persist.",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"from_entity": map[string]any{"type": "string"},
+								"to_entity":   map[string]any{"type": "string"},
+								"rel_type":    map[string]any{"type": "string"},
+								"weight":      map[string]any{"type": "number"},
+							},
+							"required": []string{"from_entity", "to_entity", "rel_type"},
+						},
+					},
+					"stages_completed": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string", "enum": []string{"entities", "relationships", "classification", "summary"}},
+						"description": "Optional explicit stage list to mark complete even when the generated output for a stage is empty.",
+					},
+					"source": map[string]any{"type": "string", "description": "Optional provenance/source label for the applied enrichment (default: mcp_agent)."},
+				},
+				"required": []string{"id", "expected_updated_at"},
+			},
+		},
+		{
 			Name:        "muninn_guide",
 			Description: "Get instructions on how to use MuninnDB effectively. Call this when you first connect or need a reminder of available capabilities and best practices.",
 			InputSchema: map[string]any{

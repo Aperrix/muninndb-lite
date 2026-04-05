@@ -226,6 +226,64 @@ type RetryEnrichResult struct {
 	Note            string   `json:"note,omitempty"`
 }
 
+// EnrichmentCandidate is one memory returned for agent-managed enrichment.
+type EnrichmentCandidate struct {
+	ID            string          `json:"id"`
+	Concept       string          `json:"concept"`
+	Content       string          `json:"content"`
+	Summary       string          `json:"summary,omitempty"`
+	MemoryType    string          `json:"memory_type,omitempty"`
+	TypeLabel     string          `json:"type_label,omitempty"`
+	CreatedAt     string          `json:"created_at"`
+	UpdatedAt     string          `json:"updated_at"`
+	MissingStages []string        `json:"missing_stages"`
+	DigestFlags   map[string]bool `json:"digest_flags"`
+}
+
+// EnrichmentCandidatesResult is returned by muninn_get_enrichment_candidates.
+type EnrichmentCandidatesResult struct {
+	Items           []EnrichmentCandidate `json:"items"`
+	StagesRequested []string              `json:"stages_requested"`
+	Count           int                   `json:"count"`
+}
+
+// ApplyEnrichmentEntity is one externally generated entity.
+type ApplyEnrichmentEntity struct {
+	Name       string  `json:"name"`
+	Type       string  `json:"type"`
+	Confidence float32 `json:"confidence,omitempty"`
+}
+
+// ApplyEnrichmentRelationship is one externally generated relationship.
+type ApplyEnrichmentRelationship struct {
+	FromEntity string  `json:"from_entity"`
+	ToEntity   string  `json:"to_entity"`
+	RelType    string  `json:"rel_type"`
+	Weight     float32 `json:"weight,omitempty"`
+}
+
+// ApplyEnrichmentRequest contains explicit enrichment output from an MCP agent.
+type ApplyEnrichmentRequest struct {
+	ID               string                      `json:"id"`
+	ExpectedUpdatedAt string                     `json:"expected_updated_at"`
+	Summary          string                      `json:"summary,omitempty"`
+	MemoryType       string                      `json:"memory_type,omitempty"`
+	TypeLabel        string                      `json:"type_label,omitempty"`
+	Entities         []ApplyEnrichmentEntity     `json:"entities,omitempty"`
+	Relationships    []ApplyEnrichmentRelationship `json:"relationships,omitempty"`
+	StagesCompleted  []string                    `json:"stages_completed,omitempty"`
+	Source           string                      `json:"source,omitempty"`
+}
+
+// ApplyEnrichmentResult is returned by muninn_apply_enrichment.
+type ApplyEnrichmentResult struct {
+	ID            string          `json:"id"`
+	Status        string          `json:"status"`
+	AppliedStages []string        `json:"applied_stages"`
+	UpdatedAt     string          `json:"updated_at"`
+	DigestFlags   map[string]bool `json:"digest_flags"`
+}
+
 // ── Tree types ────────────────────────────────────────────────────────────────
 
 // TreeNodeInput is one node in a tree passed to muninn_remember_tree.

@@ -7,8 +7,8 @@ import (
 
 func TestAllToolDefinitionsCount(t *testing.T) {
 	tools := allToolDefinitions()
-	if len(tools) != 36 {
-		t.Errorf("expected 36 tools, got %d", len(tools))
+	if len(tools) != 38 {
+		t.Errorf("expected 38 tools, got %d", len(tools))
 	}
 }
 
@@ -72,6 +72,7 @@ func TestExpectedToolNames(t *testing.T) {
 		// Epic 18
 		"muninn_restore", "muninn_traverse", "muninn_explain",
 		"muninn_state", "muninn_list_deleted", "muninn_retry_enrich",
+		"muninn_get_enrichment_candidates", "muninn_apply_enrichment",
 		// Guide
 		"muninn_guide",
 		// Hierarchical memory
@@ -128,6 +129,8 @@ func TestNewToolRequiredFields(t *testing.T) {
 		{"muninn_state", []string{"id", "state"}},
 		{"muninn_list_deleted", []string{}},
 		{"muninn_retry_enrich", []string{"id"}},
+		{"muninn_get_enrichment_candidates", []string{}},
+		{"muninn_apply_enrichment", []string{"id", "expected_updated_at"}},
 	}
 
 	for _, tc := range cases {
@@ -201,6 +204,7 @@ func TestNewToolsHaveDescriptions(t *testing.T) {
 	newTools := []string{
 		"muninn_restore", "muninn_traverse", "muninn_explain",
 		"muninn_state", "muninn_list_deleted", "muninn_retry_enrich",
+		"muninn_get_enrichment_candidates", "muninn_apply_enrichment",
 	}
 	byName := make(map[string]ToolDefinition, len(tools))
 	for _, td := range tools {

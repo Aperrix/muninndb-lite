@@ -135,6 +135,13 @@ type EngineInterface interface {
 	// When dryRun=true, only counts engrams needing enrichment without writing.
 	ReplayEnrichment(ctx context.Context, vault string, stages []string, limit int, dryRun bool) (*engine.ReplayEnrichmentResult, error)
 
+	// GetEnrichmentCandidates returns active engrams missing one or more requested
+	// enrichment stages without invoking any enrichment plugin.
+	GetEnrichmentCandidates(ctx context.Context, vault string, stages []string, limit int) (*EnrichmentCandidatesResult, error)
+
+	// ApplyEnrichment persists explicit externally generated enrichment output.
+	ApplyEnrichment(ctx context.Context, vault string, req *ApplyEnrichmentRequest) (*ApplyEnrichmentResult, error)
+
 	// GetProvenance returns the ordered audit log for an engram.
 	// Returns an empty slice (not error) if no entries exist.
 	GetProvenance(ctx context.Context, vault, id string) ([]ProvenanceEntry, error)

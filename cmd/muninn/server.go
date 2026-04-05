@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -34,6 +35,7 @@ import (
 	enrichpkg "github.com/scrypster/muninndb/internal/plugin/enrich"
 	"github.com/scrypster/muninndb/internal/replication"
 	"github.com/scrypster/muninndb/internal/storage"
+	"github.com/scrypster/muninndb/internal/transport/mbp"
 	"github.com/scrypster/muninndb/internal/storage/migrate"
 	"github.com/scrypster/muninndb/internal/wal"
 )
@@ -490,6 +492,45 @@ func parseCORSOrigins(env string) []string {
 		}
 	}
 	return origins
+}
+
+// handleClusterConn reads MBP frames from an incoming cluster TCP connection
+// and dispatches them to the coordinator. Exits when the connection is closed.
+func handleClusterConn(conn net.Conn, coord *replication.ClusterCoordinator) {
+	connOwned := true
+	defer func() {
+		if connOwned {
+			conn.Close()
+		}
+	}()
+
+	fromNodeID := conn.RemoteAddr().String()
+	joined := false
+
+	for {
+		frame, err := mbp.ReadFrame(conn)
+		if err != nil {
+			return
+		}
+		if frame.Type == mbp.TypeJoinRequest {
+			nodeID, err := coord.HandleIncomingJoin(conn, frame.Payload)
+			if err != nil {
+				log.Printf("[cluster] join error from %s: %v", fromNodeID, err)
+				return
+			}
+			fromNodeID = nodeID
+			joined = true
+			connOwned = false
+			continue
+		}
+		if !joined {
+			log.Printf("[cluster] unexpected frame type 0x%02x from %s before join; closing", frame.Type, fromNodeID)
+			return
+		}
+		if err := coord.HandleIncomingFrame(fromNodeID, frame.Type, frame.Payload); err != nil {
+			log.Printf("[cluster] frame error from %s: %v", fromNodeID, err)
+		}
+	}
 }
 
 // validateServerFlags checks that each addr is a valid host:port pair.

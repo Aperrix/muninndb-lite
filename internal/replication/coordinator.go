@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -369,11 +370,13 @@ func (c *ClusterCoordinator) runAsCortex(ctx context.Context) error {
 		return ctx.Err()
 	}
 
-	if currentEpoch == 0 {
-		slog.Info("cluster: epoch 0, bootstrapping election", "node", c.cfg.NodeID)
-		if err := c.election.StartElection(ctx); err != nil {
-			return fmt.Errorf("cluster: bootstrap election failed: %w", err)
-		}
+	// Always start an election on normal startup (epoch 0 = first boot,
+	// epoch > 0 = restart after clean shutdown or crash before handoff).
+	// The crash-mid-handoff recovery path above handles the only case where we
+	// promote without a new election.
+	slog.Info("cluster: starting election", "node", c.cfg.NodeID, "epoch", currentEpoch)
+	if err := c.election.StartElection(ctx); err != nil {
+		return fmt.Errorf("cluster: election failed: %w", err)
 	}
 
 	<-ctx.Done()
@@ -605,6 +608,46 @@ func (c *ClusterCoordinator) checkQuorumHealth() {
 	}
 }
 
+// HandleIncomingJoin processes a TypeJoinRequest frame on a raw inbound conn
+// whose node ID is not yet known. It registers the live conn under req.NodeID
+// so that peer.Send works immediately (no dial required), processes the join
+// request, and returns the joining node's stable ID so that handleClusterConn
+// can use it for all subsequent frames on the same connection.
+func (c *ClusterCoordinator) HandleIncomingJoin(conn net.Conn, payload []byte) (string, error) {
+	var req mbp.JoinRequest
+	if err := msgpack.Unmarshal(payload, &req); err != nil {
+		return "", fmt.Errorf("unmarshal JoinRequest: %w", err)
+	}
+
+	// Register the live inbound conn so peer.Send succeeds immediately.
+	// RegisterConn returns the PeerConn it created under the write lock,
+	// eliminating the TOCTOU gap of a separate GetPeer call.
+	peer := c.mgr.RegisterConn(req.NodeID, req.Addr, conn)
+
+	resp := c.joinHandler.HandleJoinRequest(req, peer)
+	respPayload, err := msgpack.Marshal(resp)
+	if err != nil {
+		return req.NodeID, fmt.Errorf("marshal JoinResponse: %w", err)
+	}
+	if err := peer.Send(mbp.TypeJoinResponse, respPayload); err != nil {
+		return req.NodeID, fmt.Errorf("cluster: send JoinResponse to %s: %w", req.NodeID, err)
+	}
+
+	if resp.NeedsSnapshot {
+		c.IncrementSnapshotCount()
+		go func() {
+			defer c.DecrementSnapshotCount()
+			ctx := context.Background()
+			if _, err := c.joinHandler.StreamSnapshot(ctx, peer); err != nil {
+				slog.Error("cluster: snapshot stream failed; closing connection so lobe can reconnect and retry",
+					"lobe", req.NodeID, "err", err)
+				_ = peer.Close()
+			}
+		}()
+	}
+	return req.NodeID, nil
+}
+
 // HandleIncomingFrame dispatches an incoming MBP frame from a peer to the right handler.
 // Called by the TCP listener when a frame arrives.
 func (c *ClusterCoordinator) HandleIncomingFrame(fromNodeID string, frameType uint8, payload []byte) error {
@@ -647,45 +690,6 @@ func (c *ClusterCoordinator) HandleIncomingFrame(fromNodeID string, frameType ui
 			return fmt.Errorf("unmarshal CortexClaim: %w", err)
 		}
 		c.election.HandleCortexClaim(claim)
-		return nil
-
-	case mbp.TypeJoinRequest:
-		var req mbp.JoinRequest
-		if err := msgpack.Unmarshal(payload, &req); err != nil {
-			return fmt.Errorf("unmarshal JoinRequest: %w", err)
-		}
-		peer, ok := c.mgr.GetPeer(fromNodeID)
-		if !ok {
-			// Create a peer for the joining node
-			c.mgr.AddPeer(req.NodeID, req.Addr)
-			peer, ok = c.mgr.GetPeer(req.NodeID)
-			if !ok {
-				return errors.New("failed to create peer for joining node")
-			}
-		}
-		resp := c.joinHandler.HandleJoinRequest(req, peer)
-		respPayload, err := msgpack.Marshal(resp)
-		if err != nil {
-			return fmt.Errorf("marshal JoinResponse: %w", err)
-		}
-		_ = peer.Send(mbp.TypeJoinResponse, respPayload)
-
-		// Phase 2: stream snapshot immediately after JoinResponse on same conn.
-		if resp.NeedsSnapshot {
-			c.IncrementSnapshotCount()
-			go func() {
-				defer c.DecrementSnapshotCount()
-				ctx := context.Background()
-				if _, err := c.joinHandler.StreamSnapshot(ctx, peer); err != nil {
-					slog.Error("cluster: snapshot stream failed; closing connection so lobe can reconnect and retry",
-						"lobe", req.NodeID, "err", err)
-					// Close the connection so the Lobe's blocking reads return an
-					// error immediately. Without this, the Lobe waits forever for
-					// a snapshot that was never completed.
-					_ = peer.Close()
-				}
-			}()
-		}
 		return nil
 
 	case mbp.TypeLeave:

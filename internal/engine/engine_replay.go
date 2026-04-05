@@ -17,6 +17,10 @@ import (
 // server session. Prevents a broken engram from blocking every replay call.
 const maxReplayFails = 3
 
+// ErrEnrichmentConflict is returned when an explicit enrichment apply request
+// targets an engram that changed after the caller fetched it.
+var ErrEnrichmentConflict = errors.New("enrichment conflict")
+
 // ReplayEnrichmentResult holds the outcome of a replay enrichment run.
 type ReplayEnrichmentResult struct {
 	Processed int
@@ -25,6 +29,56 @@ type ReplayEnrichmentResult struct {
 	Remaining int
 	StagesRun []string
 	DryRun    bool
+}
+
+// EnrichmentCandidate is one active engram that still needs enrichment.
+type EnrichmentCandidate struct {
+	ID            storage.ULID
+	Concept       string
+	Content       string
+	Summary       string
+	MemoryType    string
+	TypeLabel     string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	MissingStages []string
+	DigestFlags   uint8
+}
+
+// EnrichmentApplyEntity is one externally generated entity result.
+type EnrichmentApplyEntity struct {
+	Name       string
+	Type       string
+	Confidence float32
+}
+
+// EnrichmentApplyRelationship is one externally generated relationship result.
+type EnrichmentApplyRelationship struct {
+	FromEntity string
+	ToEntity   string
+	RelType    string
+	Weight     float32
+}
+
+// EnrichmentApplyRequest contains explicit agent-generated enrichment output.
+type EnrichmentApplyRequest struct {
+	ID                string
+	ExpectedUpdatedAt time.Time
+	Summary           string
+	MemoryType        string
+	TypeLabel         string
+	Entities          []EnrichmentApplyEntity
+	Relationships     []EnrichmentApplyRelationship
+	StagesCompleted   []string
+	Source            string
+}
+
+// EnrichmentApplyResult is returned after explicit enrichment persistence.
+type EnrichmentApplyResult struct {
+	ID            storage.ULID
+	AppliedStages []string
+	UpdatedAt     time.Time
+	DigestFlags   uint8
 }
 
 // stageToFlag maps a stage name to its DigestFlag bit.
@@ -50,23 +104,9 @@ var defaultReplayStages = []string{"entities", "relationships", "classification"
 // The method requires an EnrichPlugin to be registered via SetEnrichPlugin.
 // If no plugin is configured and dryRun is false, an error is returned.
 func (e *Engine) ReplayEnrichment(ctx context.Context, vault string, stages []string, limit int, dryRun bool) (*ReplayEnrichmentResult, error) {
-	if len(stages) == 0 {
-		stages = defaultReplayStages
-	}
-
-	// Validate and deduplicate stages; build the flag mask for "needs enrichment".
-	stageMask := uint8(0)
-	validStages := make([]string, 0, len(stages))
-	seen := make(map[string]bool)
-	for _, s := range stages {
-		if _, ok := stageToFlag[s]; !ok {
-			return nil, fmt.Errorf("unknown enrichment stage %q: valid stages are entities, relationships, classification, summary", s)
-		}
-		if !seen[s] {
-			stageMask |= stageToFlag[s]
-			validStages = append(validStages, s)
-			seen[s] = true
-		}
+	stageMask, validStages, seen, err := normalizeEnrichmentStages(stages)
+	if err != nil {
+		return nil, err
 	}
 
 	if limit <= 0 {
@@ -300,6 +340,197 @@ func (e *Engine) ReplayEnrichment(ctx context.Context, vault string, stages []st
 	}, nil
 }
 
+// GetEnrichmentCandidates returns active engrams missing at least one requested
+// stage without invoking any enrichment plugin.
+func (e *Engine) GetEnrichmentCandidates(ctx context.Context, vault string, stages []string, limit int) ([]EnrichmentCandidate, []string, error) {
+	stageMask, validStages, _, err := normalizeEnrichmentStages(stages)
+	if err != nil {
+		return nil, nil, err
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	ws := e.store.ResolveVaultPrefix(vault)
+	ids, err := e.store.ListByState(ctx, ws, storage.StateActive, limit)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get enrichment candidates: list active engrams: %w", err)
+	}
+	if len(ids) == 0 {
+		return nil, validStages, nil
+	}
+
+	engrams, err := e.store.GetEngrams(ctx, ws, ids)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get enrichment candidates: get engrams: %w", err)
+	}
+
+	candidates := make([]EnrichmentCandidate, 0, len(engrams))
+	for _, eng := range engrams {
+		if eng == nil {
+			continue
+		}
+		flags, _ := e.store.GetDigestFlags(ctx, plugin.ULID(eng.ID))
+		if flags&stageMask == stageMask {
+			continue
+		}
+		candidates = append(candidates, EnrichmentCandidate{
+			ID:            eng.ID,
+			Concept:       eng.Concept,
+			Content:       eng.Content,
+			Summary:       eng.Summary,
+			MemoryType:    eng.MemoryType.String(),
+			TypeLabel:     eng.TypeLabel,
+			CreatedAt:     eng.CreatedAt,
+			UpdatedAt:     eng.UpdatedAt,
+			MissingStages: missingStagesForFlags(flags, validStages),
+			DigestFlags:   flags,
+		})
+	}
+
+	return candidates, validStages, nil
+}
+
+// ApplyEnrichment persists explicit agent-generated enrichment output.
+func (e *Engine) ApplyEnrichment(ctx context.Context, vault string, req *EnrichmentApplyRequest) (*EnrichmentApplyResult, error) {
+	if req == nil {
+		return nil, fmt.Errorf("apply enrichment: request is required")
+	}
+	if req.ID == "" {
+		return nil, fmt.Errorf("apply enrichment: id is required")
+	}
+	if req.ExpectedUpdatedAt.IsZero() {
+		return nil, fmt.Errorf("apply enrichment: expected_updated_at is required")
+	}
+
+	id, err := storage.ParseULID(req.ID)
+	if err != nil {
+		return nil, fmt.Errorf("apply enrichment: parse id: %w", err)
+	}
+	eng, err := e.GetEngram(ctx, vault, id)
+	if err != nil {
+		return nil, fmt.Errorf("apply enrichment: get engram: %w", err)
+	}
+	if !eng.UpdatedAt.UTC().Equal(req.ExpectedUpdatedAt.UTC()) {
+		return nil, fmt.Errorf("%w: engram updated at %s, expected %s",
+			ErrEnrichmentConflict,
+			eng.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			req.ExpectedUpdatedAt.UTC().Format(time.RFC3339Nano))
+	}
+
+	completedSet, err := normalizeExplicitEnrichmentStages(req.StagesCompleted)
+	if err != nil {
+		return nil, fmt.Errorf("apply enrichment: %w", err)
+	}
+	if req.Summary != "" {
+		completedSet["summary"] = true
+	}
+	if req.MemoryType != "" || req.TypeLabel != "" {
+		completedSet["classification"] = true
+	}
+	if len(req.Entities) > 0 {
+		completedSet["entities"] = true
+	}
+	if len(req.Relationships) > 0 {
+		completedSet["relationships"] = true
+	}
+	appliedStages := materializeStageSet(completedSet)
+	if len(appliedStages) == 0 {
+		return nil, fmt.Errorf("apply enrichment: at least one enrichment field or completed stage is required")
+	}
+
+	if req.Summary != "" || req.MemoryType != "" || req.TypeLabel != "" {
+		if err := e.store.UpdateDigest(ctx, id, req.Summary, nil, req.MemoryType, req.TypeLabel); err != nil {
+			return nil, fmt.Errorf("apply enrichment: update digest: %w", err)
+		}
+	}
+
+	ws := e.store.ResolveVaultPrefix(vault)
+	source := req.Source
+	if source == "" {
+		source = "mcp_agent"
+	}
+
+	if completedSet["entities"] {
+		linkedNames := make([]string, 0, len(req.Entities))
+		for _, entity := range req.Entities {
+			if entity.Name == "" || entity.Type == "" {
+				return nil, fmt.Errorf("apply enrichment: entity name and type are required")
+			}
+			record := storage.EntityRecord{
+				Name:       entity.Name,
+				Type:       entity.Type,
+				Confidence: entity.Confidence,
+			}
+			if err := e.store.UpsertEntityRecord(ctx, record, source); err != nil {
+				return nil, fmt.Errorf("apply enrichment: upsert entity %q: %w", entity.Name, err)
+			}
+			if err := e.store.WriteEntityEngramLink(ctx, ws, id, entity.Name); err != nil {
+				return nil, fmt.Errorf("apply enrichment: link entity %q: %w", entity.Name, err)
+			}
+			linkedNames = append(linkedNames, entity.Name)
+		}
+		for i := 0; i < len(linkedNames); i++ {
+			for j := i + 1; j < len(linkedNames); j++ {
+				if err := e.store.IncrementEntityCoOccurrence(ctx, ws, linkedNames[i], linkedNames[j]); err != nil {
+					return nil, fmt.Errorf("apply enrichment: increment co-occurrence: %w", err)
+				}
+			}
+		}
+		if err := e.store.SetDigestFlag(ctx, plugin.ULID(id), plugin.DigestEntities); err != nil {
+			return nil, fmt.Errorf("apply enrichment: set entities digest flag: %w", err)
+		}
+	}
+
+	if completedSet["relationships"] {
+		for _, rel := range req.Relationships {
+			if rel.FromEntity == "" || rel.ToEntity == "" || rel.RelType == "" {
+				return nil, fmt.Errorf("apply enrichment: relationship from_entity, to_entity, and rel_type are required")
+			}
+			record := storage.RelationshipRecord{
+				FromEntity: rel.FromEntity,
+				ToEntity:   rel.ToEntity,
+				RelType:    rel.RelType,
+				Weight:     rel.Weight,
+				Source:     source,
+			}
+			if err := e.store.UpsertRelationshipRecord(ctx, ws, id, record); err != nil {
+				return nil, fmt.Errorf("apply enrichment: upsert relationship %q: %w", rel.RelType, err)
+			}
+		}
+		if err := e.store.SetDigestFlag(ctx, plugin.ULID(id), plugin.DigestRelationships); err != nil {
+			return nil, fmt.Errorf("apply enrichment: set relationships digest flag: %w", err)
+		}
+	}
+
+	if completedSet["classification"] {
+		if err := e.store.SetDigestFlag(ctx, plugin.ULID(id), plugin.DigestClassified); err != nil {
+			return nil, fmt.Errorf("apply enrichment: set classification digest flag: %w", err)
+		}
+	}
+	if completedSet["summary"] {
+		if err := e.store.SetDigestFlag(ctx, plugin.ULID(id), plugin.DigestSummarized); err != nil {
+			return nil, fmt.Errorf("apply enrichment: set summary digest flag: %w", err)
+		}
+	}
+
+	updated, err := e.GetEngram(ctx, vault, id)
+	if err != nil {
+		return nil, fmt.Errorf("apply enrichment: reload engram: %w", err)
+	}
+	flags, _ := e.store.GetDigestFlags(ctx, plugin.ULID(id))
+
+	return &EnrichmentApplyResult{
+		ID:            id,
+		AppliedStages: appliedStages,
+		UpdatedAt:     updated.UpdatedAt,
+		DigestFlags:   flags,
+	}, nil
+}
+
 // countNonNilEngrams returns the number of non-nil entries in a slice of engram pointers.
 func countNonNilEngrams(engrams []*storage.Engram) int {
 	n := 0
@@ -309,6 +540,60 @@ func countNonNilEngrams(engrams []*storage.Engram) int {
 		}
 	}
 	return n
+}
+
+func normalizeEnrichmentStages(stages []string) (uint8, []string, map[string]bool, error) {
+	if len(stages) == 0 {
+		stages = defaultReplayStages
+	}
+	stageMask := uint8(0)
+	validStages := make([]string, 0, len(stages))
+	seen := make(map[string]bool, len(stages))
+	for _, s := range stages {
+		if _, ok := stageToFlag[s]; !ok {
+			return 0, nil, nil, fmt.Errorf("unknown enrichment stage %q: valid stages are entities, relationships, classification, summary", s)
+		}
+		if !seen[s] {
+			stageMask |= stageToFlag[s]
+			validStages = append(validStages, s)
+			seen[s] = true
+		}
+	}
+	return stageMask, validStages, seen, nil
+}
+
+func normalizeExplicitEnrichmentStages(stages []string) (map[string]bool, error) {
+	seen := make(map[string]bool, len(stages))
+	for _, s := range stages {
+		if _, ok := stageToFlag[s]; !ok {
+			return nil, fmt.Errorf("unknown enrichment stage %q: valid stages are entities, relationships, classification, summary", s)
+		}
+		seen[s] = true
+	}
+	return seen, nil
+}
+
+func missingStagesForFlags(flags uint8, stages []string) []string {
+	missing := make([]string, 0, len(stages))
+	for _, stage := range stages {
+		if flags&stageToFlag[stage] == 0 {
+			missing = append(missing, stage)
+		}
+	}
+	return missing
+}
+
+func materializeStageSet(stageSet map[string]bool) []string {
+	if len(stageSet) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(defaultReplayStages))
+	for _, stage := range defaultReplayStages {
+		if stageSet[stage] {
+			out = append(out, stage)
+		}
+	}
+	return out
 }
 
 // SetEnrichPlugin registers an EnrichPlugin for use by ReplayEnrichment.

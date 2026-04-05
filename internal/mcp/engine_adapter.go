@@ -414,6 +414,90 @@ func (a *mcpEngineAdapter) ReplayEnrichment(ctx context.Context, vault string, s
 	return a.eng.ReplayEnrichment(ctx, vault, stages, limit, dryRun)
 }
 
+func (a *mcpEngineAdapter) GetEnrichmentCandidates(ctx context.Context, vault string, stages []string, limit int) (*EnrichmentCandidatesResult, error) {
+	candidates, stagesRequested, err := a.eng.GetEnrichmentCandidates(ctx, vault, stages, limit)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]EnrichmentCandidate, len(candidates))
+	for i, c := range candidates {
+		items[i] = EnrichmentCandidate{
+			ID:            c.ID.String(),
+			Concept:       c.Concept,
+			Content:       c.Content,
+			Summary:       c.Summary,
+			MemoryType:    c.MemoryType,
+			TypeLabel:     c.TypeLabel,
+			CreatedAt:     c.CreatedAt.UTC().Format(time.RFC3339Nano),
+			UpdatedAt:     c.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			MissingStages: c.MissingStages,
+			DigestFlags: map[string]bool{
+				"entities":       c.DigestFlags&plugin.DigestEntities != 0,
+				"relationships":  c.DigestFlags&plugin.DigestRelationships != 0,
+				"classification": c.DigestFlags&plugin.DigestClassified != 0,
+				"summary":        c.DigestFlags&plugin.DigestSummarized != 0,
+			},
+		}
+	}
+	return &EnrichmentCandidatesResult{
+		Items:           items,
+		StagesRequested: stagesRequested,
+		Count:           len(items),
+	}, nil
+}
+
+func (a *mcpEngineAdapter) ApplyEnrichment(ctx context.Context, vault string, req *ApplyEnrichmentRequest) (*ApplyEnrichmentResult, error) {
+	if req == nil {
+		return nil, fmt.Errorf("apply enrichment: request is required")
+	}
+	expectedUpdatedAt, err := time.Parse(time.RFC3339Nano, req.ExpectedUpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("apply enrichment: parse expected_updated_at: %w", err)
+	}
+	engineReq := &engine.EnrichmentApplyRequest{
+		ID:                req.ID,
+		ExpectedUpdatedAt: expectedUpdatedAt,
+		Summary:           req.Summary,
+		MemoryType:        req.MemoryType,
+		TypeLabel:         req.TypeLabel,
+		StagesCompleted:   req.StagesCompleted,
+		Source:            req.Source,
+	}
+	engineReq.Entities = make([]engine.EnrichmentApplyEntity, len(req.Entities))
+	for i, entity := range req.Entities {
+		engineReq.Entities[i] = engine.EnrichmentApplyEntity{
+			Name:       entity.Name,
+			Type:       entity.Type,
+			Confidence: entity.Confidence,
+		}
+	}
+	engineReq.Relationships = make([]engine.EnrichmentApplyRelationship, len(req.Relationships))
+	for i, rel := range req.Relationships {
+		engineReq.Relationships[i] = engine.EnrichmentApplyRelationship{
+			FromEntity: rel.FromEntity,
+			ToEntity:   rel.ToEntity,
+			RelType:    rel.RelType,
+			Weight:     rel.Weight,
+		}
+	}
+	result, err := a.eng.ApplyEnrichment(ctx, vault, engineReq)
+	if err != nil {
+		return nil, err
+	}
+	return &ApplyEnrichmentResult{
+		ID:            result.ID.String(),
+		Status:        "applied",
+		AppliedStages: result.AppliedStages,
+		UpdatedAt:     result.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		DigestFlags: map[string]bool{
+			"entities":       result.DigestFlags&plugin.DigestEntities != 0,
+			"relationships":  result.DigestFlags&plugin.DigestRelationships != 0,
+			"classification": result.DigestFlags&plugin.DigestClassified != 0,
+			"summary":        result.DigestFlags&plugin.DigestSummarized != 0,
+		},
+	}, nil
+}
+
 func (a *mcpEngineAdapter) RecordFeedback(ctx context.Context, vault, engramID string, useful bool) error {
 	return a.eng.RecordFeedback(ctx, vault, engramID, useful)
 }

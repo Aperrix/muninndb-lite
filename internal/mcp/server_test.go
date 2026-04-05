@@ -81,6 +81,21 @@ func (f *fakeEngine) ListDeleted(ctx context.Context, vault string, limit int) (
 func (f *fakeEngine) RetryEnrich(ctx context.Context, vault string, id string) (*RetryEnrichResult, error) {
 	return &RetryEnrichResult{EngramID: id, PluginsQueued: []string{}, AlreadyComplete: []string{}}, nil
 }
+func (f *fakeEngine) GetEnrichmentCandidates(_ context.Context, _ string, stages []string, _ int) (*EnrichmentCandidatesResult, error) {
+	if len(stages) == 0 {
+		stages = []string{"entities", "relationships", "classification", "summary"}
+	}
+	return &EnrichmentCandidatesResult{Items: []EnrichmentCandidate{}, StagesRequested: stages, Count: 0}, nil
+}
+func (f *fakeEngine) ApplyEnrichment(_ context.Context, _ string, req *ApplyEnrichmentRequest) (*ApplyEnrichmentResult, error) {
+	return &ApplyEnrichmentResult{
+		ID:            req.ID,
+		Status:        "applied",
+		AppliedStages: req.StagesCompleted,
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		DigestFlags:   map[string]bool{},
+	}, nil
+}
 func (f *fakeEngine) GetVaultPlasticity(_ context.Context, _ string) (*auth.ResolvedPlasticity, error) {
 	r := auth.ResolvePlasticity(nil)
 	return &r, nil
@@ -263,8 +278,8 @@ func TestListTools(t *testing.T) {
 	var result map[string]any
 	json.NewDecoder(w.Body).Decode(&result)
 	tools, _ := result["tools"].([]any)
-	if len(tools) != 36 {
-		t.Errorf("expected 36 tools, got %d", len(tools))
+	if len(tools) != 38 {
+		t.Errorf("expected 38 tools, got %d", len(tools))
 	}
 }
 
@@ -427,10 +442,10 @@ func TestHandleSessionInvalidSince(t *testing.T) {
 
 func TestApplyTypeArgs(t *testing.T) {
 	tests := []struct {
-		name       string
-		args       map[string]any
-		wantType   uint8
-		wantLabel  string
+		name      string
+		args      map[string]any
+		wantType  uint8
+		wantLabel string
 	}{
 		{
 			name:      "enum name sets both type and label",
@@ -498,8 +513,8 @@ func TestApplyEnrichmentArgs(t *testing.T) {
 		wantRels     int
 	}{
 		{
-			name:    "no enrichment fields",
-			args:    map[string]any{},
+			name: "no enrichment fields",
+			args: map[string]any{},
 		},
 		{
 			name:        "summary only",
@@ -546,9 +561,9 @@ func TestApplyEnrichmentArgs(t *testing.T) {
 			args: map[string]any{
 				"entities": []any{
 					map[string]any{"name": "Valid", "type": "tool"},
-					map[string]any{"name": "", "type": "tool"},       // empty name
-					map[string]any{"name": "NoType"},                  // missing type
-					"not an object",                                   // wrong type
+					map[string]any{"name": "", "type": "tool"}, // empty name
+					map[string]any{"name": "NoType"},           // missing type
+					"not an object",                            // wrong type
 				},
 			},
 			wantEntities: 1,
@@ -558,8 +573,8 @@ func TestApplyEnrichmentArgs(t *testing.T) {
 			args: map[string]any{
 				"relationships": []any{
 					map[string]any{"target_id": "01ABC", "relation": "supports"},
-					map[string]any{"target_id": "", "relation": "supports"},        // empty target
-					map[string]any{"target_id": "01ABC", "relation": ""},           // empty relation
+					map[string]any{"target_id": "", "relation": "supports"}, // empty target
+					map[string]any{"target_id": "01ABC", "relation": ""},    // empty relation
 				},
 			},
 			wantRels: 1,
