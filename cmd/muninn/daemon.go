@@ -29,9 +29,23 @@ func mcpPort() string {
 	return defaultMCPPort
 }
 
-// idleTimeout is how long the headless daemon waits without any MCP
-// request before shutting itself down.
-const idleTimeout = 5 * time.Minute
+// defaultIdleTimeout is how long the headless daemon waits without any
+// MCP request before shutting itself down. Override with MUNINN_IDLE_TIMEOUT.
+const defaultIdleTimeout = 30 * time.Minute
+
+// getIdleTimeout returns the idle timeout, checking MUNINN_IDLE_TIMEOUT
+// env var first (accepts Go duration strings like "1h", "30m", "0" to disable).
+func getIdleTimeout() time.Duration {
+	if s := os.Getenv("MUNINN_IDLE_TIMEOUT"); s != "" {
+		if s == "0" || s == "off" || s == "disable" {
+			return 0 // disabled
+		}
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultIdleTimeout
+}
 
 // isEngineReachable probes the MCP health endpoint on the given port.
 func isEngineReachable(port string) bool {
@@ -97,12 +111,29 @@ func waitForHealth(port string, timeout time.Duration) error {
 	return fmt.Errorf("daemon did not become healthy within %s", timeout)
 }
 
+// startKeepalive sends periodic pings to the daemon to prevent idle
+// timeout while this proxy session is alive. Runs until the process exits.
+func startKeepalive(port string) {
+	c := &http.Client{Timeout: 2 * time.Second}
+	url := "http://127.0.0.1:" + port + "/mcp"
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		resp, err := c.Get(url)
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+	}
+}
+
 // runHeadless exposes the internal MCP server on the well-known port
 // via a reverse proxy that tracks request timestamps for idle detection.
 // It blocks until the idle timeout is reached, then calls cancel to
 // trigger graceful shutdown of the engine.
 func runHeadless(internalPort int, cancel func()) {
 	publicAddr := "127.0.0.1:" + mcpPort()
+	timeout := getIdleTimeout()
 
 	// Bind the well-known port first — fail fast if another daemon is running.
 	ln, err := net.Listen("tcp", publicAddr)
@@ -127,18 +158,27 @@ func runHeadless(internalPort int, cancel func()) {
 
 	srv := &http.Server{Handler: handler}
 	go func() {
-		slog.Info("headless daemon listening", "addr", publicAddr)
+		if timeout > 0 {
+			slog.Info("headless daemon listening", "addr", publicAddr, "idle_timeout", timeout)
+		} else {
+			slog.Info("headless daemon listening", "addr", publicAddr, "idle_timeout", "disabled")
+		}
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			slog.Error("headless: serve error", "err", err)
 		}
 	}()
 
-	// Idle watchdog — shut down when no MCP requests for idleTimeout.
+	// Idle timeout disabled — block until SIGTERM.
+	if timeout <= 0 {
+		select {}
+	}
+
+	// Idle watchdog — shut down when no MCP requests for the configured timeout.
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
 		idle := time.Since(time.Unix(lastActivity.Load(), 0))
-		if idle > idleTimeout {
+		if idle > timeout {
 			slog.Info("headless daemon: idle timeout, shutting down",
 				"idle", idle.Round(time.Second))
 			cancel()

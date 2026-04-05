@@ -64,22 +64,20 @@ func startOrProxy() {
 	// Set proxy URL to the daemon port (overrides default from mcp_stdio.go).
 	mcpProxyURL = "http://127.0.0.1:" + port + "/mcp"
 
-	if isEngineReachable(port) {
-		// Daemon already running — proxy to it.
-		runMCPStdio()
-		return
+	if !isEngineReachable(port) {
+		// No daemon — fork one and wait for it to be ready.
+		if err := forkDaemon(); err != nil {
+			slog.Error("failed to start daemon", "err", err)
+			os.Exit(1)
+		}
+		if err := waitForHealth(port, 10*time.Second); err != nil {
+			slog.Error("daemon failed to start", "err", err)
+			os.Exit(1)
+		}
 	}
 
-	// No daemon — fork one and wait for it to be ready.
-	if err := forkDaemon(); err != nil {
-		slog.Error("failed to start daemon", "err", err)
-		os.Exit(1)
-	}
-
-	if err := waitForHealth(port, 10*time.Second); err != nil {
-		slog.Error("daemon failed to start", "err", err)
-		os.Exit(1)
-	}
+	// Keep daemon alive while this session is open.
+	go startKeepalive(port)
 
 	// Proxy to the daemon (same as upstream "muninn mcp").
 	runMCPStdio()
